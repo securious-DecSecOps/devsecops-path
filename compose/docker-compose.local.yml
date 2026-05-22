@@ -1,0 +1,27 @@
+services:
+  registry:
+    image: registry:2
+    container_name: secure-k8s-delivery-registry
+    ports:
+      - "9092:5000"
+    restart: unless-stopped
+
+  jenkins:
+    build:
+      context: ..
+      dockerfile: jenkins/Dockerfile
+    image: secure-k8s-delivery-jenkins:local
+    container_name: secure-k8s-delivery-jenkins
+    ports:
+      - "18080:8080"
+      - "50000:50000"
+    environment:
+      KUBECONFIG: /var/jenkins_home/kubeconfig
+    volumes:
+      - jenkins-home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Docker socket group IDs differ by host. If Jenkins cannot access Docker,
+    # add the host docker group id here, for example: group_add: ["998"]
+
+volumes:
+  jenkins-home:

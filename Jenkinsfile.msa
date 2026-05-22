@@ -1,0 +1,181 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  parameters {
+    string(name: 'WORKLOAD_NAME', defaultValue: 'vulnbank-msa', description: 'MSA workload profile name.')
+    string(name: 'APP_NAME', defaultValue: 'vulnbank-msa', description: 'Application/release prefix.')
+    string(name: 'MSA_WORKLOAD_DIR', defaultValue: 'examples/vulnbank-msa', description: 'MSA workload root directory.')
+    string(name: 'SERVICES', defaultValue: 'user-service,transaction-service,status-service,file-service,settings-service,frontend', description: 'Comma-separated service list.')
+    string(name: 'NAMESPACE', defaultValue: 'secure-path-dev', description: 'Target Kubernetes namespace.')
+    string(name: 'REGISTRY_URL', defaultValue: 'localhost:9092', description: 'Container registry host.')
+    string(name: 'REGISTRY_PROJECT', defaultValue: 'secure-delivery', description: 'Container registry project or repository namespace.')
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Image tag. Defaults to BUILD_NUMBER when blank.')
+    string(name: 'KUBECONFIG', defaultValue: '/var/jenkins_home/kubeconfig', description: 'Kubeconfig path in the Jenkins container.')
+    choice(name: 'DEPLOY_MODE', choices: ['helm', 'argocd'], description: 'MSA deployment mode.')
+    booleanParam(name: 'ENFORCE_GATE', defaultValue: false, description: 'Fail the pipeline when the security gate blocks.')
+    string(name: 'HELM_RELEASE', defaultValue: 'vulnbank-msa', description: 'Helm release name.')
+    string(name: 'HELM_CHART_DIR', defaultValue: 'helm/vulnbank-msa', description: 'Helm chart directory.')
+    string(name: 'GITOPS_APP_DIR', defaultValue: 'gitops/apps/vulnbank-msa/dev', description: 'GitOps app environment directory.')
+    string(name: 'ARGOCD_APP_MANIFEST', defaultValue: 'argocd/applications/vulnbank-msa-dev.yaml', description: 'ArgoCD Application manifest.')
+    string(name: 'ARGOCD_APP_NAME', defaultValue: 'vulnbank-msa-dev', description: 'ArgoCD Application name.')
+  }
+
+  environment {
+    WORKLOAD_NAME = "${params.WORKLOAD_NAME}"
+    APP_NAME = "${params.APP_NAME}"
+    MSA_WORKLOAD_DIR = "${params.MSA_WORKLOAD_DIR}"
+    SERVICES = "${params.SERVICES}"
+    NAMESPACE = "${params.NAMESPACE}"
+    REGISTRY_URL = "${params.REGISTRY_URL}"
+    REGISTRY_PROJECT = "${params.REGISTRY_PROJECT}"
+    KUBECONFIG = "${params.KUBECONFIG}"
+    DEPLOY_MODE = "${params.DEPLOY_MODE}"
+    ENFORCE_GATE = "${params.ENFORCE_GATE}"
+    HELM_RELEASE = "${params.HELM_RELEASE}"
+    HELM_CHART_DIR = "${params.HELM_CHART_DIR}"
+    GITOPS_APP_DIR = "${params.GITOPS_APP_DIR}"
+    ARGOCD_APP_MANIFEST = "${params.ARGOCD_APP_MANIFEST}"
+    ARGOCD_APP_NAME = "${params.ARGOCD_APP_NAME}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Preflight Tools') {
+      steps {
+        sh '''
+          set -euo pipefail
+
+          require_cmd() {
+            if ! command -v "$1" >/dev/null 2>&1; then
+              echo "ERROR: required command not found: $1" >&2
+              exit 1
+            fi
+          }
+
+          for cmd in docker kubectl helm trivy python3 git; do
+            require_cmd "$cmd"
+          done
+
+          docker --version
+          kubectl version --client=true
+          helm version
+          trivy --version
+          python3 --version
+          git --version
+
+          if [[ ! -f "${KUBECONFIG}" ]]; then
+            echo "ERROR: KUBECONFIG does not exist: ${KUBECONFIG}" >&2
+            exit 1
+          fi
+
+          if ! kubectl get nodes; then
+            echo "WARN: kubectl get nodes failed. Deployment may fail later." >&2
+          fi
+        '''
+      }
+    }
+
+    stage('Prepare Metadata') {
+      steps {
+        script {
+          env.IMAGE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
+          env.REPORT_DIR = "reports/dev/${env.BUILD_NUMBER}"
+        }
+        sh '''
+          set -euo pipefail
+          mkdir -p \
+            "${REPORT_DIR}/gate" \
+            "${REPORT_DIR}/registry" \
+            "${REPORT_DIR}/helm" \
+            "${REPORT_DIR}/gitops" \
+            "${REPORT_DIR}/argocd" \
+            "${REPORT_DIR}/kubernetes" \
+            "${REPORT_DIR}/events"
+
+          GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
+          {
+            echo "BUILD_NUMBER=${BUILD_NUMBER}"
+            echo "GIT_SHA=${GIT_SHA:-unknown}"
+            echo "WORKLOAD_NAME=${WORKLOAD_NAME}"
+            echo "APP_NAME=${APP_NAME}"
+            echo "MSA_WORKLOAD_DIR=${MSA_WORKLOAD_DIR}"
+            echo "SERVICES=${SERVICES}"
+            echo "IMAGE_TAG=${IMAGE_TAG}"
+            echo "NAMESPACE=${NAMESPACE}"
+            echo "DEPLOY_MODE=${DEPLOY_MODE}"
+            echo "ENFORCE_GATE=${ENFORCE_GATE}"
+            echo "REPORT_DIR=${REPORT_DIR}"
+          } | tee "${REPORT_DIR}/metadata.txt"
+        '''
+      }
+    }
+
+    stage('Docker Build Services') {
+      steps {
+        sh 'bash scripts/build-services.sh'
+      }
+    }
+
+    stage('Trivy Scan Services') {
+      steps {
+        sh 'bash scripts/trivy-scan-services.sh'
+      }
+    }
+
+    stage('Security Gate') {
+      steps {
+        sh 'bash scripts/security-gate-services.sh'
+      }
+    }
+
+    stage('Registry Login') {
+      steps {
+        sh 'bash scripts/registry-login.sh'
+      }
+    }
+
+    stage('Registry Push Services') {
+      steps {
+        sh 'bash scripts/push-services.sh'
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        script {
+          if (env.DEPLOY_MODE == 'helm') {
+            sh 'bash scripts/update-gitops-services.sh'
+            sh 'bash scripts/deploy-msa-helm.sh'
+          } else if (env.DEPLOY_MODE == 'argocd') {
+            sh 'bash scripts/update-gitops-services.sh'
+            sh 'bash scripts/deploy-argocd.sh'
+          } else {
+            error("Unsupported MSA DEPLOY_MODE='${env.DEPLOY_MODE}'. Use helm or argocd.")
+          }
+        }
+      }
+    }
+
+    stage('Collect Evidence') {
+      steps {
+        sh 'bash scripts/collect-msa-evidence.sh'
+      }
+    }
+
+    stage('Archive Evidence') {
+      steps {
+        archiveArtifacts artifacts: "${env.REPORT_DIR}/**", allowEmptyArchive: true, fingerprint: true
+      }
+    }
+  }
+}
