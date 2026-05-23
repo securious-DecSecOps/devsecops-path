@@ -278,10 +278,18 @@ project_file="${sonar_dir}/sonar-project.properties"
 work_dir="${sonar_dir}/.scannerwork"
 mkdir -p "${work_dir}"
 
+# sonar.projectBaseDir must be the workspace root so that sonar.sources paths
+# (app-source-repo/..., scripts, bootstrap/local-wsl) resolve correctly. When
+# -Dproject.settings points to a properties file in a subdirectory, scanner
+# treats THAT subdirectory as baseDir by default — and our sources won't exist
+# under reports/dev/N/sonarqube/.
+project_base_dir="$(pwd)"
+
 cat > "${project_file}" <<EOF
 sonar.projectKey=${SONAR_PROJECT_KEY}
 sonar.projectName=VulnBank MSA
 sonar.projectVersion=${IMAGE_TAG:-dev}
+sonar.projectBaseDir=${project_base_dir}
 sonar.sources=${MSA_WORKLOAD_DIR}/services,scripts,bootstrap/local-wsl
 sonar.exclusions=**/vendor/**,**/node_modules/**,**/reports/**,**/.git/**
 sonar.sourceEncoding=UTF-8
@@ -297,6 +305,7 @@ EOF
 scanner_log="${sonar_dir}/sonar-scanner.log"
 if SONAR_TOKEN="${SONAR_TOKEN}" sonar-scanner \
   -Dproject.settings="${project_file}" \
+  -Dsonar.projectBaseDir="${project_base_dir}" \
   -Dsonar.scanner.skipJreProvisioning=true \
   -Dsonar.token="${SONAR_TOKEN}" > "${scanner_log}" 2>&1; then
   write_status "${status_file}" "SONAR_SCAN_RESULT=SCAN_SUBMITTED"
