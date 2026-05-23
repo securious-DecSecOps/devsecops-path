@@ -43,7 +43,7 @@ fi
 params=(
   --data-urlencode "WORKLOAD_NAME=vulnbank-msa"
   --data-urlencode "APP_NAME=vulnbank-msa"
-  --data-urlencode "MSA_WORKLOAD_DIR=examples/vulnbank-msa"
+  --data-urlencode "MSA_WORKLOAD_DIR=app-source-repo/examples/vulnbank-msa"
   --data-urlencode "SERVICES=user-service,transaction-service,status-service,file-service,settings-service,frontend"
   --data-urlencode "NAMESPACE=${NAMESPACE}"
   --data-urlencode "REGISTRY_URL=${registry_url}"
@@ -53,9 +53,9 @@ params=(
   --data-urlencode "DEPLOY_MODE=${DEPLOY_MODE}"
   --data-urlencode "ENFORCE_GATE=false"
   --data-urlencode "HELM_RELEASE=vulnbank-msa"
-  --data-urlencode "HELM_CHART_DIR=helm/vulnbank-msa"
-  --data-urlencode "GITOPS_APP_DIR=gitops/apps/vulnbank-msa/dev"
-  --data-urlencode "ARGOCD_APP_MANIFEST=argocd/applications/vulnbank-msa-dev.yaml"
+  --data-urlencode "HELM_CHART_DIR=gitops-manifest-repo/helm/vulnbank-msa"
+  --data-urlencode "GITOPS_APP_DIR=gitops-manifest-repo/apps/vulnbank-msa/dev"
+  --data-urlencode "ARGOCD_APP_MANIFEST=gitops-manifest-repo/argocd/applications/vulnbank-msa-dev.yaml"
   --data-urlencode "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
 )
 
