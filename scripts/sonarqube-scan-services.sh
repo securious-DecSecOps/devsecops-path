@@ -103,14 +103,34 @@ PY
   install_dir="${HOME}/.local/sonar/${install_dir_name}"
 
   if [[ ! -x "${install_dir}/bin/sonar-scanner" ]]; then
+    # Use python's zipfile + explicit Unix permission preservation. By default
+    # zf.extractall() ignores external_attr (Unix mode bits) so executables come
+    # out as 0644, breaking sonar-scanner's launcher and the embedded JRE's java.
     python3 - "${zip_path}" "${HOME}/.local/sonar" <<'PY'
+import os
 import sys
 import zipfile
 
 with zipfile.ZipFile(sys.argv[1]) as zf:
-    zf.extractall(sys.argv[2])
+    for info in zf.infolist():
+        out_path = zf.extract(info, sys.argv[2])
+        if info.is_dir():
+            continue
+        mode = (info.external_attr >> 16) & 0xFFFF
+        if mode:
+            try:
+                os.chmod(out_path, mode)
+            except OSError:
+                pass
 PY
+    # Safety net: ensure key binaries are executable even if zip metadata lied.
     chmod +x "${install_dir}/bin/sonar-scanner" 2>/dev/null || true
+    if [[ -d "${install_dir}/jre/bin" ]]; then
+      chmod +x "${install_dir}/jre/bin/"* 2>/dev/null || true
+    fi
+    if [[ -d "${install_dir}/jre/lib/jspawnhelper" ]]; then
+      chmod +x "${install_dir}/jre/lib/jspawnhelper" 2>/dev/null || true
+    fi
   fi
 
   if [[ ! -x "${install_dir}/bin/sonar-scanner" ]]; then
