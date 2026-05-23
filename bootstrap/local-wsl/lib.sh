@@ -35,6 +35,15 @@ export IMAGE_TAG="${IMAGE_TAG:-}"
 
 export LOCAL_STATE_DIR="${LOCAL_STATE_DIR:-.local/wsl-poc}"
 export HARBOR_ROBOT_ENV_FILE="${HARBOR_ROBOT_ENV_FILE:-${LOCAL_STATE_DIR}/harbor-robot.env}"
+export SONAR_CONTAINER_NAME="${SONAR_CONTAINER_NAME:-secubank-sonarqube}"
+export SONAR_LOCAL_URL="${SONAR_LOCAL_URL:-http://localhost:9000}"
+export SONAR_ADMIN_PASSWORD="${SONAR_ADMIN_PASSWORD:-Secubank-sonar-admin1}"
+export SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-vulnbank-msa}"
+export SONAR_TOKEN_NAME="${SONAR_TOKEN_NAME:-vulnbank-msa-jenkins}"
+export SONAR_TOKEN_CREDENTIAL_ID="${SONAR_TOKEN_CREDENTIAL_ID:-sonarqube-token}"
+export SONAR_TOKEN_FILE="${SONAR_TOKEN_FILE:-${LOCAL_STATE_DIR}/sonarqube-token.env}"
+export SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}"
+export SONAR_HOST_URL_FOR_JENKINS="${SONAR_HOST_URL_FOR_JENKINS:-}"
 
 log() {
   printf '[local-wsl] %s\n' "$*"
@@ -115,5 +124,12 @@ load_harbor_robot_env() {
   if [[ -f "${HARBOR_ROBOT_ENV_FILE}" ]]; then
     # shellcheck disable=SC1090
     source "${HARBOR_ROBOT_ENV_FILE}"
+  fi
+}
+
+load_sonarqube_token_env() {
+  if [[ -f "${SONAR_TOKEN_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${SONAR_TOKEN_FILE}"
   fi
 }

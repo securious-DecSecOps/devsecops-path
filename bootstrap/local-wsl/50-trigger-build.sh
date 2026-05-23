@@ -9,6 +9,45 @@ require_cmd curl
 require_cmd python3
 
 load_harbor_robot_env
+load_sonarqube_token_env
+
+probe_sonar_from_jenkins_container() {
+  local candidate="$1"
+  if ! command -v docker >/dev/null 2>&1; then
+    return 1
+  fi
+  docker inspect "${JENKINS_CONTAINER}" >/dev/null 2>&1 || return 1
+  docker exec "${JENKINS_CONTAINER}" sh -lc "command -v curl >/dev/null 2>&1 && curl -fsS --max-time 3 ${candidate%/}/api/system/status >/dev/null" >/dev/null 2>&1
+}
+
+detect_sonar_url_for_jenkins() {
+  local candidate
+  local host_ip
+  if [[ -n "${SONAR_HOST_URL_FOR_JENKINS}" ]]; then
+    printf '%s\n' "${SONAR_HOST_URL_FOR_JENKINS}"
+    return 0
+  fi
+
+  for candidate in "${SONAR_HOST_URL}" "http://sonarqube:9000" "http://host.docker.internal:9000" "http://172.17.0.1:9000"; do
+    if probe_sonar_from_jenkins_container "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -n "${host_ip}" ]]; then
+    candidate="http://${host_ip}:9000"
+    if probe_sonar_from_jenkins_container "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  fi
+
+  warn "Could not verify SonarQube reachability from Jenkins container ${JENKINS_CONTAINER}."
+  warn "Using ${SONAR_HOST_URL}. If SonarQube scan cannot connect, rerun with SONAR_HOST_URL_FOR_JENKINS=http://host.docker.internal:9000 or http://<WSL-IP>:9000."
+  printf '%s\n' "${SONAR_HOST_URL}"
+}
 
 crumb_args=()
 while IFS= read -r item; do
@@ -17,10 +56,16 @@ done < <(jenkins_crumb_header_args)
 
 registry_username="${REGISTRY_USERNAME:-${HARBOR_ROBOT_USERNAME:-}}"
 registry_password="${REGISTRY_PASSWORD:-${HARBOR_ROBOT_PASSWORD:-}}"
+sonar_token="${SONAR_TOKEN:-}"
 
 if [[ -z "${registry_username}" || -z "${registry_password}" ]]; then
   warn "REGISTRY_USERNAME/REGISTRY_PASSWORD were not found. The Jenkins build may fail at docker login."
   warn "Run bootstrap/local-wsl/20-jenkins-credentials.sh first, or export REGISTRY_USERNAME/REGISTRY_PASSWORD."
+fi
+
+if [[ -z "${sonar_token}" ]]; then
+  warn "SONAR_TOKEN was not found. SonarQube stage will be skipped by the pipeline."
+  warn "Run bootstrap/local-wsl/05-install-sonarqube.sh first, or export SONAR_TOKEN."
 fi
 
 job_url="${JENKINS_URL%/}/job/$(urlencode "${JENKINS_JOB_NAME}")"
@@ -29,6 +74,7 @@ if ! jenkins_curl GET "${job_url}/api/json" >/dev/null 2>&1; then
 fi
 
 registry_url="${REGISTRY_URL_FOR_JENKINS:-harbor:8082}"
+sonar_host_url="$(detect_sonar_url_for_jenkins)"
 if [[ -f "${LOCAL_STATE_DIR}/${JENKINS_JOB_NAME}-config.xml" ]]; then
   registry_url="$(python3 - "${LOCAL_STATE_DIR}/${JENKINS_JOB_NAME}-config.xml" <<'PY'
 import re
@@ -43,6 +89,10 @@ fi
 params=(
   --data-urlencode "WORKLOAD_NAME=vulnbank-msa"
   --data-urlencode "APP_NAME=vulnbank-msa"
+  --data-urlencode "APP_SOURCE_REPO_URL=${APP_SOURCE_REPO_URL}"
+  --data-urlencode "APP_SOURCE_BRANCH=${APP_SOURCE_BRANCH}"
+  --data-urlencode "GITOPS_REPO_URL=${GITOPS_REPO_URL}"
+  --data-urlencode "GITOPS_BRANCH=${GITOPS_BRANCH}"
   --data-urlencode "MSA_WORKLOAD_DIR=app-source-repo/examples/vulnbank-msa"
   --data-urlencode "SERVICES=user-service,transaction-service,status-service,file-service,settings-service,frontend"
   --data-urlencode "NAMESPACE=${NAMESPACE}"
@@ -57,11 +107,16 @@ params=(
   --data-urlencode "GITOPS_APP_DIR=gitops-manifest-repo/apps/vulnbank-msa/dev"
   --data-urlencode "ARGOCD_APP_MANIFEST=gitops-manifest-repo/argocd/applications/vulnbank-msa-dev.yaml"
   --data-urlencode "ARGOCD_APP_NAME=${ARGOCD_APP_NAME}"
+  --data-urlencode "SONAR_HOST_URL=${sonar_host_url}"
 )
 
 if [[ -n "${registry_username}" && -n "${registry_password}" ]]; then
   params+=(--data-urlencode "REGISTRY_USERNAME=${registry_username}")
   params+=(--data-urlencode "REGISTRY_PASSWORD=${registry_password}")
+fi
+
+if [[ -n "${sonar_token}" ]]; then
+  params+=(--data-urlencode "SONAR_TOKEN=${sonar_token}")
 fi
 
 headers_file="${LOCAL_STATE_DIR}/jenkins-trigger-headers.txt"

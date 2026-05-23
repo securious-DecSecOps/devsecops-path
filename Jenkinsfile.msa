@@ -26,7 +26,9 @@ pipeline {
     string(name: 'HELM_CHART_DIR', defaultValue: 'gitops-manifest-repo/helm/vulnbank-msa', description: 'Helm chart directory.')
     string(name: 'GITOPS_APP_DIR', defaultValue: 'gitops-manifest-repo/apps/vulnbank-msa/dev', description: 'GitOps app environment directory.')
     string(name: 'ARGOCD_APP_MANIFEST', defaultValue: 'gitops-manifest-repo/argocd/applications/vulnbank-msa-dev.yaml', description: 'ArgoCD Application manifest.')
-    string(name: 'ARGOCD_APP_NAME', defaultValue: 'vulnbank-msa-dev', description: 'ArgoCD Application name.')
+    string(name: 'ARGOCD_APP_NAME', defaultValue: 'secubank-vulnbank-msa-dev', description: 'ArgoCD Application name.')
+    string(name: 'SONAR_HOST_URL', defaultValue: 'http://sonarqube:9000', description: 'SonarQube URL as seen from the Jenkins container.')
+    password(name: 'SONAR_TOKEN', defaultValue: '', description: 'SonarQube token for the vulnbank-msa project.')
   }
 
   environment {
@@ -49,6 +51,8 @@ pipeline {
     GITOPS_APP_DIR = "${params.GITOPS_APP_DIR}"
     ARGOCD_APP_MANIFEST = "${params.ARGOCD_APP_MANIFEST}"
     ARGOCD_APP_NAME = "${params.ARGOCD_APP_NAME}"
+    SONAR_HOST_URL = "${params.SONAR_HOST_URL}"
+    SONAR_TOKEN = "${params.SONAR_TOKEN}"
   }
 
   stages {
@@ -163,6 +167,24 @@ pipeline {
     stage('Trivy Scan Services') {
       steps {
         sh 'bash scripts/trivy-scan-services.sh'
+      }
+    }
+
+    stage('Checkov IaC Scan') {
+      steps {
+        sh 'bash scripts/checkov-scan-services.sh'
+      }
+    }
+
+    stage('Gitleaks Secret Scan') {
+      steps {
+        sh 'bash scripts/gitleaks-scan-repos.sh'
+      }
+    }
+
+    stage('SonarQube SAST') {
+      steps {
+        sh 'bash scripts/sonarqube-scan-services.sh'
       }
     }
 

@@ -73,6 +73,7 @@ app_source_repo_url = os.environ["APP_SOURCE_REPO_URL"]
 app_source_branch = os.environ["APP_SOURCE_BRANCH"]
 gitops_repo_url = os.environ["GITOPS_REPO_URL"]
 gitops_branch = os.environ["GITOPS_BRANCH"]
+sonar_host_url = os.environ["SONAR_HOST_URL"]
 
 def esc(value):
     return x.escape(value)
@@ -136,6 +137,8 @@ params += string_param("HELM_CHART_DIR", "gitops-manifest-repo/helm/vulnbank-msa
 params += string_param("GITOPS_APP_DIR", "gitops-manifest-repo/apps/vulnbank-msa/dev", "GitOps app environment directory in the checked-out GitOps repo.")
 params += string_param("ARGOCD_APP_MANIFEST", "gitops-manifest-repo/argocd/applications/vulnbank-msa-dev.yaml", "ArgoCD Application manifest.")
 params += string_param("ARGOCD_APP_NAME", argocd_app_name, "ArgoCD Application name.")
+params += string_param("SONAR_HOST_URL", sonar_host_url, "SonarQube URL as seen from the Jenkins container.")
+params += password_param("SONAR_TOKEN", "", "SonarQube token for the vulnbank-msa project.")
 params += string_param("REGISTRY_USERNAME", "", f"Runtime registry username. Trigger script passes Harbor robot from Jenkins credential {credential_id}.")
 params += password_param("REGISTRY_PASSWORD", "", f"Runtime registry password/token. Trigger script passes Harbor robot from Jenkins credential {credential_id}.")
 

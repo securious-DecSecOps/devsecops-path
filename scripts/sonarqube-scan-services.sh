@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SONAR_SCANNER_VERSION="${SONAR_SCANNER_VERSION:-6.2.1.4610}"
+SONAR_PROJECT_KEY="${SONAR_PROJECT_KEY:-vulnbank-msa}"
+SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}"
+SONAR_QUALITY_GATE_TIMEOUT_SECONDS="${SONAR_QUALITY_GATE_TIMEOUT_SECONDS:-60}"
+
+require_env() {
+  local name="$1"
+  if [[ -z "${!name:-}" ]]; then
+    echo "ERROR: required environment variable is not set: ${name}" >&2
+    exit 1
+  fi
+}
+
+ensure_local_bin() {
+  mkdir -p "${HOME}/.local/bin" "${HOME}/.local/sonar"
+  export PATH="${HOME}/.local/bin:${PATH}"
+}
+
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) echo "x64" ;;
+    aarch64|arm64) echo "aarch64" ;;
+    *) echo "x64" ;;
+  esac
+}
+
+ensure_sonar_scanner() {
+  ensure_local_bin
+  if command -v sonar-scanner >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local arch
+  local file_name
+  local url
+  local zip_path
+  local install_dir
+  arch="$(detect_arch)"
+  file_name="sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-${arch}"
+  url="${SONAR_SCANNER_URL:-https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/${file_name}.zip}"
+  zip_path="${HOME}/.local/sonar/${file_name}.zip"
+  install_dir="${HOME}/.local/sonar/${file_name}"
+
+  if [[ ! -d "${install_dir}" ]]; then
+    if command -v wget >/dev/null 2>&1; then
+      wget -q -O "${zip_path}" "${url}"
+    elif command -v curl >/dev/null 2>&1; then
+      curl -fsSL -o "${zip_path}" "${url}"
+    else
+      echo "ERROR: wget or curl is required to install sonar-scanner." >&2
+      return 1
+    fi
+
+    python3 - "${zip_path}" "${HOME}/.local/sonar" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    zf.extractall(sys.argv[2])
+PY
+  fi
+
+  ln -sfn "${install_dir}/bin/sonar-scanner" "${HOME}/.local/bin/sonar-scanner"
+  command -v sonar-scanner >/dev/null 2>&1
+}
+
+write_status() {
+  local status_file="$1"
+  shift
+  printf '%s\n' "$@" | tee -a "${status_file}"
+}
+
+quality_gate_poll() {
+  local report_task_file="$1"
+  local status_file="$2"
+  python3 - "${report_task_file}" "${status_file}" "${SONAR_TOKEN}" "${SONAR_QUALITY_GATE_TIMEOUT_SECONDS}" <<'PY'
+import base64
+import json
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+report_task_file, status_file, token, timeout_s = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+props = {}
+with open(report_task_file, "r", encoding="utf-8") as fh:
+    for line in fh:
+        line = line.strip()
+        if "=" in line:
+            key, value = line.split("=", 1)
+            props[key] = value
+
+ce_task_url = props.get("ceTaskUrl")
+server_url = props.get("serverUrl")
+project_key = props.get("projectKey")
+if not ce_task_url or not server_url:
+    raise SystemExit("report-task.txt did not include ceTaskUrl/serverUrl")
+
+auth = base64.b64encode((token + ":").encode()).decode()
+
+def get_json(url):
+    req = urllib.request.Request(url, headers={"Authorization": "Basic " + auth})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode())
+
+deadline = time.time() + timeout_s
+analysis_id = None
+ce_status = "UNKNOWN"
+while time.time() < deadline:
+    data = get_json(ce_task_url)
+    task = data.get("task", {})
+    ce_status = task.get("status", "UNKNOWN")
+    if ce_status in ("SUCCESS", "FAILED", "CANCELED"):
+        analysis_id = task.get("analysisId")
+        break
+    time.sleep(5)
+
+with open(status_file, "a", encoding="utf-8") as fh:
+    fh.write(f"CE_TASK_STATUS={ce_status}\n")
+    if analysis_id:
+        fh.write(f"ANALYSIS_ID={analysis_id}\n")
+
+if ce_status != "SUCCESS" or not analysis_id:
+    raise SystemExit(f"SonarQube CE task did not finish successfully: {ce_status}")
+
+query = urllib.parse.urlencode({"analysisId": analysis_id})
+qg = get_json(server_url.rstrip("/") + "/api/qualitygates/project_status?" + query)
+project_status = qg.get("projectStatus", {})
+gate_status = project_status.get("status", "UNKNOWN")
+
+with open(status_file, "a", encoding="utf-8") as fh:
+    fh.write(f"QUALITY_GATE_STATUS={gate_status}\n")
+    fh.write(f"PROJECT_KEY={project_key or ''}\n")
+    fh.write(json.dumps(project_status, indent=2) + "\n")
+
+if gate_status != "OK":
+    raise SystemExit(f"SonarQube quality gate status is {gate_status}")
+PY
+}
+
+require_env REPORT_DIR
+require_env MSA_WORKLOAD_DIR
+
+sonar_dir="${REPORT_DIR}/sonarqube"
+status_file="${sonar_dir}/sonarqube-status.txt"
+mkdir -p "${sonar_dir}"
+: > "${status_file}"
+
+write_status "${status_file}" \
+  "SONAR_HOST_URL=${SONAR_HOST_URL}" \
+  "SONAR_PROJECT_KEY=${SONAR_PROJECT_KEY}" \
+  "ENFORCE_GATE=${ENFORCE_GATE:-false}"
+
+if [[ -z "${SONAR_TOKEN:-}" ]]; then
+  write_status "${status_file}" "SONAR_SCAN_RESULT=SKIPPED" "SKIP_REASON=SONAR_TOKEN is empty"
+  echo "WARN: SONAR_TOKEN is empty; skipping SonarQube scan." >&2
+  exit 0
+fi
+
+if ! ensure_sonar_scanner; then
+  write_status "${status_file}" "SONAR_SCAN_RESULT=INSTALL_FAILED"
+  if [[ "${ENFORCE_GATE:-false}" == "true" ]]; then
+    exit 1
+  fi
+  echo "WARN: sonar-scanner installation failed; continuing because ENFORCE_GATE=${ENFORCE_GATE:-false}." >&2
+  exit 0
+fi
+
+project_file="${sonar_dir}/sonar-project.properties"
+work_dir="${sonar_dir}/.scannerwork"
+mkdir -p "${work_dir}"
+
+cat > "${project_file}" <<EOF
+sonar.projectKey=${SONAR_PROJECT_KEY}
+sonar.projectName=VulnBank MSA
+sonar.projectVersion=${IMAGE_TAG:-dev}
+sonar.sources=${MSA_WORKLOAD_DIR}/services,scripts,bootstrap/local-wsl
+sonar.exclusions=**/vendor/**,**/node_modules/**,**/reports/**,**/.git/**
+sonar.sourceEncoding=UTF-8
+sonar.host.url=${SONAR_HOST_URL}
+sonar.working.directory=${work_dir}
+EOF
+
+scanner_log="${sonar_dir}/sonar-scanner.log"
+if SONAR_TOKEN="${SONAR_TOKEN}" sonar-scanner \
+  -Dproject.settings="${project_file}" \
+  -Dsonar.token="${SONAR_TOKEN}" > "${scanner_log}" 2>&1; then
+  write_status "${status_file}" "SONAR_SCAN_RESULT=SCAN_SUBMITTED"
+else
+  write_status "${status_file}" "SONAR_SCAN_RESULT=SCAN_FAILED" "SCANNER_LOG=${scanner_log}"
+  if [[ "${ENFORCE_GATE:-false}" == "true" ]]; then
+    sed -n '1,220p' "${scanner_log}" >&2
+    exit 1
+  fi
+  echo "WARN: sonar-scanner failed; continuing because ENFORCE_GATE=${ENFORCE_GATE:-false}. See ${scanner_log}" >&2
+  exit 0
+fi
+
+report_task_file="${work_dir}/report-task.txt"
+if [[ ! -f "${report_task_file}" ]]; then
+  write_status "${status_file}" "SONAR_QUALITY_GATE_RESULT=UNKNOWN" "REASON=report-task.txt not found"
+  if [[ "${ENFORCE_GATE:-false}" == "true" ]]; then
+    exit 1
+  fi
+  echo "WARN: SonarQube report-task.txt not found; continuing because ENFORCE_GATE=${ENFORCE_GATE:-false}." >&2
+  exit 0
+fi
+
+if quality_gate_poll "${report_task_file}" "${status_file}"; then
+  write_status "${status_file}" "SONAR_QUALITY_GATE_RESULT=PASS"
+else
+  write_status "${status_file}" "SONAR_QUALITY_GATE_RESULT=BLOCK"
+  if [[ "${ENFORCE_GATE:-false}" == "true" ]]; then
+    exit 1
+  fi
+  echo "WARN: SonarQube quality gate blocked, but ENFORCE_GATE=${ENFORCE_GATE:-false} allows continuation." >&2
+fi
+
+echo "SonarQube scan artifacts written to ${sonar_dir}"
+exit 0

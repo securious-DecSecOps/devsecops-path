@@ -22,6 +22,7 @@ if [[ "${current_context}" != "kind-devsecops" ]]; then
 fi
 
 "${SCRIPT_DIR}/10-harbor-project.sh"
+"${SCRIPT_DIR}/05-install-sonarqube.sh"
 "${SCRIPT_DIR}/20-jenkins-credentials.sh"
 "${SCRIPT_DIR}/30-jenkins-job.sh"
 
