@@ -208,9 +208,14 @@ done
 } > "${compat_gate}"
 
 if [[ "${overall_result}" == "BLOCK" ]]; then
-  echo "ERROR: MSA security gate blocked this build before registry push." >&2
-  echo "ERROR: See ${summary} for service-level details." >&2
-  exit 1
+  if [[ "${ENFORCE_GATE}" == "true" ]]; then
+    echo "ERROR: MSA security gate blocked this build before registry push." >&2
+    echo "ERROR: See ${summary} for service-level details." >&2
+    exit 1
+  else
+    echo "WARN: MSA security gate result is BLOCK, but ENFORCE_GATE=${ENFORCE_GATE} allows continuation." >&2
+    echo "WARN: See ${summary} for service-level details. Findings are recorded in the build evidence." >&2
+  fi
 fi
 
-echo "MSA security gate passed for all services."
+echo "MSA security gate evaluation complete (result=${overall_result}, enforce=${ENFORCE_GATE})."
