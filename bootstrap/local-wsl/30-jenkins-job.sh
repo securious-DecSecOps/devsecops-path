@@ -21,32 +21,21 @@ probe_from_jenkins_container() {
 }
 
 detect_registry_url_for_jenkins() {
-  local candidate
-  local host_ip
   if [[ -n "${REGISTRY_URL_FOR_JENKINS}" ]]; then
     printf '%s\n' "${REGISTRY_URL_FOR_JENKINS}"
     return 0
   fi
 
-  for candidate in "harbor:8082" "host.docker.internal:8082"; do
-    if probe_from_jenkins_container "${candidate}"; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
-  done
-
-  host_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -n "${host_ip}" ]]; then
-    candidate="${host_ip}:8082"
-    if probe_from_jenkins_container "${candidate}"; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
-  fi
-
-  warn "Could not verify Harbor reachability from Jenkins container ${JENKINS_CONTAINER}."
-  warn "Using harbor:8082 as the Jenkins REGISTRY_URL default. If the build cannot login/push, rerun with REGISTRY_URL_FOR_JENKINS=host.docker.internal:8082 or <WSL-IP>:8082."
-  printf '%s\n' "harbor:8082"
+  # IMPORTANT: docker push from Jenkins runs through the host's docker daemon
+  # (Jenkins mounts /var/run/docker.sock). So REGISTRY_URL must be a value the
+  # HOST daemon trusts in its insecure-registries list (typically 127.0.0.0/8).
+  # A curl-based probe from inside the Jenkins container can pick a URL that
+  # is curl-reachable (e.g., <WSL-IP>:8082) but is NOT in the daemon's
+  # insecure list — causing "http: server gave HTTP response to HTTPS client".
+  #
+  # For the WSL local PoC we therefore default to "localhost:8082" without
+  # any probe. Override with REGISTRY_URL_FOR_JENKINS for other environments.
+  printf '%s\n' "localhost:8082"
 }
 
 registry_url="$(detect_registry_url_for_jenkins)"
