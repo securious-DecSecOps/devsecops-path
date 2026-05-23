@@ -33,9 +33,16 @@ ensure_checkov() {
     echo "ERROR: python3 is required to install checkov." >&2
     return 1
   fi
-  if ! python3 -m pip install --user --upgrade checkov; then
-    echo "ERROR: failed to install checkov with python3 -m pip." >&2
-    return 1
+  # Some Python distributions (Debian/Ubuntu Python 3.11+, PEP 668) mark the
+  # system environment as externally managed and refuse `pip install` without
+  # an explicit override. For PoC, allow the install to proceed.
+  if ! python3 -m pip install --user --upgrade --break-system-packages checkov 2>/tmp/checkov-pip.log; then
+    # Retry without the flag for older Python where it isn't recognized.
+    if ! python3 -m pip install --user --upgrade checkov >>/tmp/checkov-pip.log 2>&1; then
+      echo "ERROR: failed to install checkov with python3 -m pip." >&2
+      sed -n '1,40p' /tmp/checkov-pip.log >&2 || true
+      return 1
+    fi
   fi
   command -v checkov >/dev/null 2>&1
 }
