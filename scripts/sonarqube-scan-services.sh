@@ -118,10 +118,15 @@ PY
   install_dir="${HOME}/.local/sonar/${install_dir_name}"
 
   if [[ ! -x "${install_dir}/bin/sonar-scanner" ]]; then
-    # Use python's zipfile + explicit Unix permission preservation. By default
-    # zf.extractall() ignores external_attr (Unix mode bits) so executables come
-    # out as 0644, breaking sonar-scanner's launcher and the embedded JRE's java.
-    python3 - "${zip_path}" "${HOME}/.local/sonar" <<'PY'
+    # Prefer `unzip` CLI if available: it preserves Unix perms reliably and
+    # handles JRE binaries (java launcher, jspawnhelper, .so libs) correctly.
+    # Python zipfile.extractall() lost x-bit on JRE binaries and even after
+    # an explicit chmod, sonar-scanner's ProcessBuilder still failed with
+    # EACCES on the extracted java — likely missed files/links.
+    if command -v unzip >/dev/null 2>&1; then
+      ( cd "${HOME}/.local/sonar" && unzip -q -o "${zip_path}" )
+    else
+      python3 - "${zip_path}" "${HOME}/.local/sonar" <<'PY'
 import os
 import sys
 import zipfile
@@ -138,12 +143,13 @@ with zipfile.ZipFile(sys.argv[1]) as zf:
             except OSError:
                 pass
 PY
+    fi
     # Safety net: ensure key binaries are executable even if zip metadata lied.
     chmod +x "${install_dir}/bin/sonar-scanner" 2>/dev/null || true
     if [[ -d "${install_dir}/jre/bin" ]]; then
       chmod +x "${install_dir}/jre/bin/"* 2>/dev/null || true
     fi
-    if [[ -d "${install_dir}/jre/lib/jspawnhelper" ]]; then
+    if [[ -f "${install_dir}/jre/lib/jspawnhelper" ]]; then
       chmod +x "${install_dir}/jre/lib/jspawnhelper" 2>/dev/null || true
     fi
   fi
