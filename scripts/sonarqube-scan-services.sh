@@ -39,12 +39,15 @@ ensure_sonar_scanner() {
   local zip_path
   local install_dir
   arch="$(detect_arch)"
+  # SonarSource zip filename uses "sonar-scanner-cli-<ver>-linux-<arch>.zip"
+  # but starting from 7.x the directory inside the zip is named WITHOUT the
+  # "-cli-" segment (just "sonar-scanner-<ver>-linux-<arch>"). Detect the
+  # extracted dir name from the zip's first entry instead of guessing.
   file_name="sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux-${arch}"
   url="${SONAR_SCANNER_URL:-https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/${file_name}.zip}"
   zip_path="${HOME}/.local/sonar/${file_name}.zip"
-  install_dir="${HOME}/.local/sonar/${file_name}"
 
-  if [[ ! -d "${install_dir}" ]]; then
+  if [[ ! -f "${zip_path}" ]]; then
     if command -v wget >/dev/null 2>&1; then
       wget -q -O "${zip_path}" "${url}"
     elif command -v curl >/dev/null 2>&1; then
@@ -53,7 +56,30 @@ ensure_sonar_scanner() {
       echo "ERROR: wget or curl is required to install sonar-scanner." >&2
       return 1
     fi
+  fi
 
+  # Resolve the actual top-level directory inside the zip (it differs per
+  # SonarSource release: 6.x = sonar-scanner-cli-*, 7.x = sonar-scanner-*).
+  install_dir_name="$(python3 - "${zip_path}" <<'PY'
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as zf:
+    names = zf.namelist()
+top_dirs = {n.split("/", 1)[0] for n in names if "/" in n}
+top_dirs.discard("")
+# Prefer one that contains "sonar-scanner".
+candidates = sorted(d for d in top_dirs if "sonar-scanner" in d)
+print(candidates[0] if candidates else "")
+PY
+)"
+  if [[ -z "${install_dir_name}" ]]; then
+    echo "ERROR: could not determine sonar-scanner top-level dir from zip ${zip_path}" >&2
+    return 1
+  fi
+  install_dir="${HOME}/.local/sonar/${install_dir_name}"
+
+  if [[ ! -x "${install_dir}/bin/sonar-scanner" ]]; then
     python3 - "${zip_path}" "${HOME}/.local/sonar" <<'PY'
 import sys
 import zipfile
@@ -61,6 +87,12 @@ import zipfile
 with zipfile.ZipFile(sys.argv[1]) as zf:
     zf.extractall(sys.argv[2])
 PY
+    chmod +x "${install_dir}/bin/sonar-scanner" 2>/dev/null || true
+  fi
+
+  if [[ ! -x "${install_dir}/bin/sonar-scanner" ]]; then
+    echo "ERROR: sonar-scanner binary not found at ${install_dir}/bin/sonar-scanner after extract" >&2
+    return 1
   fi
 
   ln -sfn "${install_dir}/bin/sonar-scanner" "${HOME}/.local/bin/sonar-scanner"
