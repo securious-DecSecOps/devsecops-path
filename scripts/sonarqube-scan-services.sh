@@ -19,6 +19,29 @@ ensure_local_bin() {
   export PATH="${HOME}/.local/bin:${PATH}"
 }
 
+# sonar-scanner needs a JRE. The Jenkins LTS-jdk17 image ships JDK at
+# /opt/java/openjdk but Jenkins sh-steps don't always export JAVA_HOME.
+# Detect a usable java and export both PATH + JAVA_HOME for sonar-scanner.
+ensure_java() {
+  if [[ -n "${JAVA_HOME:-}" && -x "${JAVA_HOME}/bin/java" ]]; then
+    export PATH="${JAVA_HOME}/bin:${PATH}"
+    return 0
+  fi
+  local candidate
+  for candidate in /opt/java/openjdk /usr/lib/jvm/java-17-openjdk-amd64 /usr/lib/jvm/default-java; do
+    if [[ -x "${candidate}/bin/java" ]]; then
+      export JAVA_HOME="${candidate}"
+      export PATH="${candidate}/bin:${PATH}"
+      return 0
+    fi
+  done
+  if command -v java >/dev/null 2>&1; then
+    return 0
+  fi
+  echo "ERROR: java runtime not found. sonar-scanner requires a JRE." >&2
+  return 1
+}
+
 detect_arch() {
   case "$(uname -m)" in
     x86_64|amd64) echo "x64" ;;
@@ -189,6 +212,15 @@ write_status "${status_file}" \
 if [[ -z "${SONAR_TOKEN:-}" ]]; then
   write_status "${status_file}" "SONAR_SCAN_RESULT=SKIPPED" "SKIP_REASON=SONAR_TOKEN is empty"
   echo "WARN: SONAR_TOKEN is empty; skipping SonarQube scan." >&2
+  exit 0
+fi
+
+if ! ensure_java; then
+  write_status "${status_file}" "SONAR_SCAN_RESULT=JAVA_MISSING"
+  if [[ "${ENFORCE_GATE:-false}" == "true" ]]; then
+    exit 1
+  fi
+  echo "WARN: java runtime missing; continuing because ENFORCE_GATE=${ENFORCE_GATE:-false}." >&2
   exit 0
 fi
 
