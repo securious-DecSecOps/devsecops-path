@@ -30,6 +30,15 @@ python3 - "${manifest}" <<'PY'
 import os
 import sys
 
+# ArgoCD-native Helm source. Avoids needing kustomize.buildOptions=--enable-helm
+# on the existing cluster's argocd-cm. valuesFiles paths are resolved relative
+# to the chart directory in the same repo.
+helm_chart_path = os.environ.get("GITOPS_HELM_CHART_PATH", "helm/vulnbank-msa")
+values_path = os.environ.get("GITOPS_APP_PATH", "apps/vulnbank-msa/dev")
+# Relative path from the chart dir up to repo root, then into the values dir.
+chart_depth = helm_chart_path.count("/") + 1
+relative_values_file = ("../" * chart_depth) + values_path + "/values.yaml"
+
 manifest = f"""apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -40,7 +49,11 @@ spec:
   source:
     repoURL: {os.environ["GITOPS_REPO_URL"]}
     targetRevision: {os.environ["GITOPS_TARGET_REVISION"]}
-    path: {os.environ["GITOPS_APP_PATH"]}
+    path: {helm_chart_path}
+    helm:
+      releaseName: {os.environ.get("HELM_RELEASE", "vulnbank-msa")}
+      valueFiles:
+        - {relative_values_file}
   destination:
     server: https://kubernetes.default.svc
     namespace: {os.environ["ARGOCD_DEST_NAMESPACE"]}
