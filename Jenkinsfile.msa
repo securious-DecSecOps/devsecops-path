@@ -9,7 +9,11 @@ pipeline {
   parameters {
     string(name: 'WORKLOAD_NAME', defaultValue: 'vulnbank-msa', description: 'MSA workload profile name.')
     string(name: 'APP_NAME', defaultValue: 'vulnbank-msa', description: 'Application/release prefix.')
-    string(name: 'MSA_WORKLOAD_DIR', defaultValue: 'examples/vulnbank-msa', description: 'MSA workload root directory.')
+    string(name: 'APP_SOURCE_REPO_URL', defaultValue: 'https://github.com/securious-DecSecOps/app-source-repo.git', description: 'GitHub URL of the app-source-repo (examples/vulnbank-msa).')
+    string(name: 'APP_SOURCE_BRANCH', defaultValue: 'main', description: 'Branch to check out from app-source-repo.')
+    string(name: 'GITOPS_REPO_URL', defaultValue: 'https://github.com/securious-DecSecOps/gitops-manifest-repo.git', description: 'GitHub URL of gitops-manifest-repo (helm chart + apps overlay).')
+    string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'Branch to check out from gitops-manifest-repo.')
+    string(name: 'MSA_WORKLOAD_DIR', defaultValue: 'app-source-repo/examples/vulnbank-msa', description: 'MSA workload root directory.')
     string(name: 'SERVICES', defaultValue: 'user-service,transaction-service,status-service,file-service,settings-service,frontend', description: 'Comma-separated service list.')
     string(name: 'NAMESPACE', defaultValue: 'secure-path-dev', description: 'Target Kubernetes namespace.')
     string(name: 'REGISTRY_URL', defaultValue: 'localhost:9092', description: 'Container registry host.')
@@ -19,15 +23,19 @@ pipeline {
     choice(name: 'DEPLOY_MODE', choices: ['helm', 'argocd'], description: 'MSA deployment mode.')
     booleanParam(name: 'ENFORCE_GATE', defaultValue: false, description: 'Fail the pipeline when the security gate blocks.')
     string(name: 'HELM_RELEASE', defaultValue: 'vulnbank-msa', description: 'Helm release name.')
-    string(name: 'HELM_CHART_DIR', defaultValue: 'helm/vulnbank-msa', description: 'Helm chart directory.')
-    string(name: 'GITOPS_APP_DIR', defaultValue: 'gitops/apps/vulnbank-msa/dev', description: 'GitOps app environment directory.')
-    string(name: 'ARGOCD_APP_MANIFEST', defaultValue: 'argocd/applications/vulnbank-msa-dev.yaml', description: 'ArgoCD Application manifest.')
+    string(name: 'HELM_CHART_DIR', defaultValue: 'gitops-manifest-repo/helm/vulnbank-msa', description: 'Helm chart directory.')
+    string(name: 'GITOPS_APP_DIR', defaultValue: 'gitops-manifest-repo/apps/vulnbank-msa/dev', description: 'GitOps app environment directory.')
+    string(name: 'ARGOCD_APP_MANIFEST', defaultValue: 'gitops-manifest-repo/argocd/applications/vulnbank-msa-dev.yaml', description: 'ArgoCD Application manifest.')
     string(name: 'ARGOCD_APP_NAME', defaultValue: 'vulnbank-msa-dev', description: 'ArgoCD Application name.')
   }
 
   environment {
     WORKLOAD_NAME = "${params.WORKLOAD_NAME}"
     APP_NAME = "${params.APP_NAME}"
+    APP_SOURCE_REPO_URL = "${params.APP_SOURCE_REPO_URL}"
+    APP_SOURCE_BRANCH = "${params.APP_SOURCE_BRANCH}"
+    GITOPS_REPO_URL = "${params.GITOPS_REPO_URL}"
+    GITOPS_BRANCH = "${params.GITOPS_BRANCH}"
     MSA_WORKLOAD_DIR = "${params.MSA_WORKLOAD_DIR}"
     SERVICES = "${params.SERVICES}"
     NAMESPACE = "${params.NAMESPACE}"
@@ -82,6 +90,32 @@ pipeline {
             echo "WARN: kubectl get nodes failed. Deployment may fail later." >&2
           fi
         '''
+      }
+    }
+
+    stage('Checkout App Source') {
+      steps {
+        dir('app-source-repo') {
+          checkout([
+            $class: 'GitSCM',
+            userRemoteConfigs: [[url: "${APP_SOURCE_REPO_URL}"]],
+            branches: [[name: "*/${APP_SOURCE_BRANCH}"]],
+          ])
+        }
+        sh 'ls -la app-source-repo/examples/vulnbank-msa/services | head'
+      }
+    }
+
+    stage('Checkout GitOps Repo') {
+      steps {
+        dir('gitops-manifest-repo') {
+          checkout([
+            $class: 'GitSCM',
+            userRemoteConfigs: [[url: "${GITOPS_REPO_URL}"]],
+            branches: [[name: "*/${GITOPS_BRANCH}"]],
+          ])
+        }
+        sh 'ls -la gitops-manifest-repo/helm/vulnbank-msa/templates | head'
       }
     }
 

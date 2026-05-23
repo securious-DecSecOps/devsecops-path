@@ -69,6 +69,10 @@ deploy_mode = os.environ["DEPLOY_MODE"]
 argocd_app_name = os.environ["ARGOCD_APP_NAME"]
 credential_id = os.environ["JENKINS_CREDENTIAL_ID"]
 git_credentials_id = os.environ.get("GIT_CREDENTIALS_ID", "")
+app_source_repo_url = os.environ["APP_SOURCE_REPO_URL"]
+app_source_branch = os.environ["APP_SOURCE_BRANCH"]
+gitops_repo_url = os.environ["GITOPS_REPO_URL"]
+gitops_branch = os.environ["GITOPS_BRANCH"]
 
 def esc(value):
     return x.escape(value)
@@ -114,7 +118,11 @@ def password_param(name, default, desc):
 params = ""
 params += string_param("WORKLOAD_NAME", "vulnbank-msa", "MSA workload profile name.")
 params += string_param("APP_NAME", "vulnbank-msa", "Application/release prefix.")
-params += string_param("MSA_WORKLOAD_DIR", "examples/vulnbank-msa", "MSA workload root directory.")
+params += string_param("APP_SOURCE_REPO_URL", app_source_repo_url, "GitHub URL of the app-source-repo (examples/vulnbank-msa).")
+params += string_param("APP_SOURCE_BRANCH", app_source_branch, "Branch to check out from app-source-repo.")
+params += string_param("GITOPS_REPO_URL", gitops_repo_url, "GitHub URL of gitops-manifest-repo (helm chart + apps overlay).")
+params += string_param("GITOPS_BRANCH", gitops_branch, "Branch to check out from gitops-manifest-repo.")
+params += string_param("MSA_WORKLOAD_DIR", "app-source-repo/examples/vulnbank-msa", "MSA workload root directory.")
 params += string_param("SERVICES", "user-service,transaction-service,status-service,file-service,settings-service,frontend", "Comma-separated service list.")
 params += string_param("NAMESPACE", namespace, "Target Kubernetes namespace.")
 params += string_param("REGISTRY_URL", registry_url, "Registry endpoint as seen from the Jenkins container.")
@@ -124,9 +132,9 @@ params += string_param("KUBECONFIG", "/var/jenkins_home/kubeconfig", "Kubeconfig
 params += choice_param("DEPLOY_MODE", ["helm", "argocd"], deploy_mode, "MSA deployment mode.")
 params += bool_param("ENFORCE_GATE", False, "Fail the pipeline when the security gate blocks.")
 params += string_param("HELM_RELEASE", "vulnbank-msa", "Helm release name.")
-params += string_param("HELM_CHART_DIR", "helm/vulnbank-msa", "Helm chart directory.")
-params += string_param("GITOPS_APP_DIR", "gitops/apps/vulnbank-msa/dev", "GitOps app environment directory in this source repo.")
-params += string_param("ARGOCD_APP_MANIFEST", "argocd/applications/vulnbank-msa-dev.yaml", "ArgoCD Application manifest.")
+params += string_param("HELM_CHART_DIR", "gitops-manifest-repo/helm/vulnbank-msa", "Helm chart directory.")
+params += string_param("GITOPS_APP_DIR", "gitops-manifest-repo/apps/vulnbank-msa/dev", "GitOps app environment directory in the checked-out GitOps repo.")
+params += string_param("ARGOCD_APP_MANIFEST", "gitops-manifest-repo/argocd/applications/vulnbank-msa-dev.yaml", "ArgoCD Application manifest.")
 params += string_param("ARGOCD_APP_NAME", argocd_app_name, "ArgoCD Application name.")
 params += string_param("REGISTRY_USERNAME", "", f"Runtime registry username. Trigger script passes Harbor robot from Jenkins credential {credential_id}.")
 params += password_param("REGISTRY_PASSWORD", "", f"Runtime registry password/token. Trigger script passes Harbor robot from Jenkins credential {credential_id}.")
