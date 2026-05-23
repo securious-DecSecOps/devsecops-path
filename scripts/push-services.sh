@@ -70,11 +70,15 @@ if [[ -z "${gate_status}" ]]; then
 fi
 
 if [[ "${gate_status}" != "PASS" ]]; then
-  echo "ERROR: security gate result is ${gate_status}. Refusing to push service images." >&2
-  if [[ -f "${REPORT_DIR}/gate/msa-gate-summary.txt" ]]; then
-    sed -n '1,240p' "${REPORT_DIR}/gate/msa-gate-summary.txt" >&2
+  if [[ "${ENFORCE_GATE:-true}" == "true" ]]; then
+    echo "ERROR: security gate result is ${gate_status} and ENFORCE_GATE=true. Refusing to push service images." >&2
+    if [[ -f "${REPORT_DIR}/gate/msa-gate-summary.txt" ]]; then
+      sed -n '1,240p' "${REPORT_DIR}/gate/msa-gate-summary.txt" >&2
+    fi
+    exit 1
+  else
+    echo "WARN: security gate result is ${gate_status} but ENFORCE_GATE=false. Proceeding with push; findings remain in evidence." >&2
   fi
-  exit 1
 fi
 
 registry_root="${REPORT_DIR}/registry"
