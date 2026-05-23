@@ -293,6 +293,11 @@ sonar.projectBaseDir=${project_base_dir}
 sonar.sources=${MSA_WORKLOAD_DIR}/services,scripts,bootstrap/local-wsl
 sonar.exclusions=**/vendor/**,**/node_modules/**,**/reports/**,**/.git/**
 sonar.sourceEncoding=UTF-8
+# Disable SCM (git) integration. Each sub-repo (app-source-repo, gitops-manifest-repo)
+# has its own .git so workspace-root git ls-files only sees ~29 devsecops-path files
+# and skips all 34 PHP files in app-source-repo. Without SCM, scanner uses
+# sonar.sources directly and finds every PHP/shell/etc. file.
+sonar.scm.disabled=true
 sonar.host.url=${SONAR_HOST_URL}
 sonar.working.directory=${work_dir}
 # Skip JRE auto-provisioning from the SonarQube server. The scanner ships with
