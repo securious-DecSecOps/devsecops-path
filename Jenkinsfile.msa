@@ -222,6 +222,20 @@ pipeline {
       }
     }
 
+    stage('GitOps Commit Push') {
+      when {
+        expression { params.DEPLOY_MODE == 'argocd' }
+      }
+      steps {
+        withCredentials([
+          string(credentialsId: 'github-gitops-pat', variable: 'GITHUB_PAT'),
+          string(credentialsId: 'github-gitops-user', variable: 'GITHUB_USER')
+        ]) {
+          sh 'bash scripts/gitops-commit-push.sh'
+        }
+      }
+    }
+
     stage('Collect Evidence') {
       steps {
         sh 'bash scripts/collect-msa-evidence.sh'

@@ -44,6 +44,9 @@ export SONAR_TOKEN_CREDENTIAL_ID="${SONAR_TOKEN_CREDENTIAL_ID:-sonarqube-token}"
 export SONAR_TOKEN_FILE="${SONAR_TOKEN_FILE:-${LOCAL_STATE_DIR}/sonarqube-token.env}"
 export SONAR_HOST_URL="${SONAR_HOST_URL:-http://sonarqube:9000}"
 export SONAR_HOST_URL_FOR_JENKINS="${SONAR_HOST_URL_FOR_JENKINS:-}"
+export GITHUB_PAT_FILE="${GITHUB_PAT_FILE:-${LOCAL_STATE_DIR}/github-pat.env}"
+export GITHUB_PAT_CREDENTIAL_ID="${GITHUB_PAT_CREDENTIAL_ID:-github-gitops-pat}"
+export GITHUB_USER_CREDENTIAL_ID="${GITHUB_USER_CREDENTIAL_ID:-github-gitops-user}"
 
 log() {
   printf '[local-wsl] %s\n' "$*"
@@ -131,5 +134,12 @@ load_sonarqube_token_env() {
   if [[ -f "${SONAR_TOKEN_FILE}" ]]; then
     # shellcheck disable=SC1090
     source "${SONAR_TOKEN_FILE}"
+  fi
+}
+
+load_github_pat_env() {
+  if [[ -f "${GITHUB_PAT_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${GITHUB_PAT_FILE}"
   fi
 }

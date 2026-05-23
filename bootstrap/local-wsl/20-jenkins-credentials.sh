@@ -179,4 +179,55 @@ else
   warn "SONAR_TOKEN was not found. Run bootstrap/local-wsl/05-install-sonarqube.sh or export SONAR_TOKEN before registering Jenkins SonarQube credentials."
 fi
 
-log "Jenkins credentials are registered. The trigger script passes Harbor and SonarQube values as build parameters."
+register_secret_text_credential() {
+  local credential_id="$1"
+  local description="$2"
+  local secret_value="$3"
+  local xml_file="${LOCAL_STATE_DIR}/jenkins-${credential_id}.xml"
+  local credential_path
+
+  export REGISTER_CREDENTIAL_ID="${credential_id}"
+  export REGISTER_CREDENTIAL_DESCRIPTION="${description}"
+  export REGISTER_CREDENTIAL_SECRET="${secret_value}"
+
+  python3 - "${xml_file}" <<'PY'
+import os
+import sys
+import xml.sax.saxutils as x
+
+xml = f"""<org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl>
+  <scope>GLOBAL</scope>
+  <id>{x.escape(os.environ["REGISTER_CREDENTIAL_ID"])}</id>
+  <description>{x.escape(os.environ["REGISTER_CREDENTIAL_DESCRIPTION"])}</description>
+  <secret>{x.escape(os.environ["REGISTER_CREDENTIAL_SECRET"])}</secret>
+</org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl>
+"""
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    fh.write(xml)
+PY
+
+  credential_path="${JENKINS_URL%/}/credentials/store/system/domain/_/credential/$(urlencode "${credential_id}")"
+  if jenkins_curl GET "${credential_path}/api/json" >/dev/null 2>&1; then
+    jenkins_curl POST "${credential_path}/config.xml" "${crumb_args[@]}" \
+      -H 'Content-Type: application/xml' \
+      --data-binary @"${xml_file}" >/dev/null
+    log "Updated Jenkins credential: ${credential_id}"
+  else
+    jenkins_curl POST "${JENKINS_URL%/}/credentials/store/system/domain/_/createCredentials" "${crumb_args[@]}" \
+      -H 'Content-Type: application/xml' \
+      --data-binary @"${xml_file}" >/dev/null
+    log "Created Jenkins credential: ${credential_id}"
+  fi
+
+  unset REGISTER_CREDENTIAL_ID REGISTER_CREDENTIAL_DESCRIPTION REGISTER_CREDENTIAL_SECRET
+}
+
+load_github_pat_env
+if [[ -n "${GITHUB_PAT:-}" && -n "${GITHUB_USER:-}" ]]; then
+  register_secret_text_credential "${GITHUB_PAT_CREDENTIAL_ID}" "GitHub PAT for pushing gitops-manifest-repo from Jenkins" "${GITHUB_PAT}"
+  register_secret_text_credential "${GITHUB_USER_CREDENTIAL_ID}" "GitHub username for pushing gitops-manifest-repo from Jenkins" "${GITHUB_USER}"
+else
+  warn "GITHUB_PAT or GITHUB_USER was not found. Create ${GITHUB_PAT_FILE} or export both variables before registering GitHub GitOps credentials."
+fi
+
+log "Jenkins credentials are registered. The trigger script passes Harbor and SonarQube values as build parameters; GitHub PAT credentials are consumed by Jenkinsfile.msa withCredentials."

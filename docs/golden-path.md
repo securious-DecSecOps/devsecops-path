@@ -64,3 +64,43 @@ local, Helm, ArgoCD 경로를 오갈 때는 구조를 바꾸기보다 registry e
 
 이 항목들은 local MVP 필수 서비스가 아니라 확장 포인트입니다.
 
+## GitOps Commit Push
+
+`DEPLOY_MODE=argocd`에서 GitOps loop를 닫으려면 Jenkins가 `gitops-manifest-repo`의 image tag 변경을 GitHub로 commit/push할 수 있어야 합니다.
+
+필요한 credential은 GitHub PAT입니다.
+
+```text
+Required repo permission:
+- gitops-manifest-repo Contents Read/Write
+```
+
+로컬 WSL PoC에서는 다음 파일에 저장합니다. 이 경로는 `.gitignore` 대상입니다.
+
+```bash
+cat > .local/wsl-poc/github-pat.env <<'EOF'
+GITHUB_USER=<github-username>
+GITHUB_PAT=<github-personal-access-token>
+EOF
+chmod 600 .local/wsl-poc/github-pat.env
+```
+
+이후 bootstrap을 다시 실행하면 Jenkins credential이 등록됩니다.
+
+```bash
+RUN_BUILD=false WAIT_ARGOCD=false bash bootstrap/local-wsl/configure.sh
+```
+
+Jenkinsfile.msa는 `DEPLOY_MODE=argocd`일 때만 `GitOps Commit Push` stage를 실행합니다.
+
+```text
+Jenkins build
+-> Harbor push
+-> update-gitops-services.sh
+-> gitops-commit-push.sh
+-> GitHub gitops-manifest-repo commit
+-> ArgoCD auto-sync
+-> Kubernetes rollout
+```
+
+`DEPLOY_MODE=helm`에서는 직접 Helm 배포 흐름이므로 GitOps commit/push stage가 skip됩니다.
