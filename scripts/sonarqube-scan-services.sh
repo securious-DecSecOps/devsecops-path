@@ -266,11 +266,17 @@ sonar.exclusions=**/vendor/**,**/node_modules/**,**/reports/**,**/.git/**
 sonar.sourceEncoding=UTF-8
 sonar.host.url=${SONAR_HOST_URL}
 sonar.working.directory=${work_dir}
+# Skip JRE auto-provisioning from the SonarQube server. The scanner ships with
+# its own embedded JRE which we chmod'd correctly in ensure_sonar_scanner.
+# Without this flag, scanner downloads JRE into ~/.sonar/cache and the
+# extracted java loses Unix exec bits (same root cause as the scanner zip).
+sonar.scanner.skipJreProvisioning=true
 EOF
 
 scanner_log="${sonar_dir}/sonar-scanner.log"
 if SONAR_TOKEN="${SONAR_TOKEN}" sonar-scanner \
   -Dproject.settings="${project_file}" \
+  -Dsonar.scanner.skipJreProvisioning=true \
   -Dsonar.token="${SONAR_TOKEN}" > "${scanner_log}" 2>&1; then
   write_status "${status_file}" "SONAR_SCAN_RESULT=SCAN_SUBMITTED"
 else
