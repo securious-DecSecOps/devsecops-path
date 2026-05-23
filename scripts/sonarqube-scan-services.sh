@@ -53,6 +53,21 @@ detect_arch() {
 ensure_sonar_scanner() {
   ensure_local_bin
   if command -v sonar-scanner >/dev/null 2>&1; then
+    # Even when the scanner is already cached, re-assert exec bits. Past builds
+    # extracted the embedded JRE without preserving Unix perms, and a workspace
+    # cleanup elsewhere can also strip x-bits. This is a 1-second safety net.
+    local scanner_path
+    scanner_path="$(command -v sonar-scanner)"
+    local scanner_real
+    scanner_real="$(readlink -f "${scanner_path}" 2>/dev/null || echo "${scanner_path}")"
+    local scanner_root
+    scanner_root="$(dirname "$(dirname "${scanner_real}")")"
+    if [[ -d "${scanner_root}/bin" ]]; then
+      chmod +x "${scanner_root}/bin/"* 2>/dev/null || true
+    fi
+    if [[ -d "${scanner_root}/jre/bin" ]]; then
+      chmod +x "${scanner_root}/jre/bin/"* 2>/dev/null || true
+    fi
     return 0
   fi
 
