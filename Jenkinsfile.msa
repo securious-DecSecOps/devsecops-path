@@ -176,6 +176,12 @@ pipeline {
       }
     }
 
+    stage('Kubescape K8s Manifest Scan') {
+      steps {
+        sh 'bash scripts/kubescape-scan.sh'
+      }
+    }
+
     stage('Checkov IaC Scan') {
       steps {
         sh 'bash scripts/checkov-scan-services.sh'
