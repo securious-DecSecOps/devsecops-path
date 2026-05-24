@@ -170,6 +170,12 @@ pipeline {
       }
     }
 
+    stage('Generate SBOM') {
+      steps {
+        sh 'bash scripts/generate-sbom.sh'
+      }
+    }
+
     stage('Checkov IaC Scan') {
       steps {
         sh 'bash scripts/checkov-scan-services.sh'
