@@ -46,3 +46,9 @@ Thumbs.db
 
 # Files created when this context kit is copied from Windows.
 *:Zone.Identifier
+
+# Marp 렌더링 산출물 + 다운로드된 chromium (재생성 가능, 절대 commit 금지)
+docs/chrome/
+docs/presentation-mentor.html
+docs/presentation-mentor.pdf
+docs/presentation-mentor.pptx

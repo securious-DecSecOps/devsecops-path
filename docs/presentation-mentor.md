@@ -1,10 +1,25 @@
-# VulnBank MSA DevSecOps PoC — 멘토 발표 자료
+---
+marp: true
+theme: default
+paginate: true
+header: 'VulnBank MSA DevSecOps PoC'
+footer: 'dsaedsae · github.com/securious-DecSecOps · v0.3.1-poc'
+style: |
+  section { font-size: 22px; }
+  h1 { font-size: 36px; }
+  h2 { font-size: 30px; }
+  code { font-size: 18px; }
+  pre { font-size: 16px; }
+  table { font-size: 18px; }
+---
 
-작성일 기준: Build #19 검증 완료 시점 (tag v0.3.1-poc)
+# VulnBank MSA DevSecOps PoC
+
+멘토 발표 자료
+
+작성: dsaedsae
+기준: Build #19, tag v0.3.1-poc
 GitHub: github.com/securious-DecSecOps
-
-> 이 문서는 슬라이드 원고 형태로 쓰여 있다. `---` 구분이 슬라이드 한 장.
-> 그대로 PowerPoint/Keynote/Slides에 옮기거나, Marp/Slidev로 렌더링 가능.
 
 ---
 
