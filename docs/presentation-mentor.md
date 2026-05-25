@@ -284,6 +284,7 @@ PoC는 Jenkins archive까지만.
 - 런타임 도구(Falco, Cilium, Istio)는 install 안 했다. 다만 들어갈 자리는 `gitops-manifest-repo/platform/` 하위로 확정해놓아서, 다음 단계가 자연스럽게 이어진다.
 - DAST는 verify.sh의 custom script만. OWASP ZAP은 cluster CronJob 모드(`platform/zap/`)로 다음 단계.
 - SBOM은 파일 생성까지. Dependency-Track 연동은 운영 단계.
+- 현재는 VulnBank reference implementation이지 generic platform은 아니다. 다른 워크로드 온보딩 contract는 `docs/워크로드-온보딩-가이드.md`에 명세되어 있고, KubeGoat 같은 K8s-native 취약 워크로드는 30분(빠른 시연)~1~2일(풀 통합) 범위로 추가 가능하다.
 
 "안 한 것"을 솔직히 늘어놓는 게 오히려 평가에 좋다고 본다.
 다음 단계 자리가 명확하다는 게 PoC의 가치니까.
@@ -386,7 +387,7 @@ AWS — 다음 codex 작업으로 install bootstrap script 작성 예정. EC2 fr
 - kubectl get pods (image `:21` 보이게)
 - verify.sh 7/7 PASS 출력
 - gitops 레포 `git log --oneline -3` (Jenkins commit 보이게)
-- `docs/known-limitations.md`, `docs/sbom-evidence.md`, `docs/kubescape-integration.md` 출력본
+- `docs/known-limitations.md`, `docs/sbom-evidence.md`, `docs/kubescape-integration.md`, `docs/워크로드-온보딩-가이드.md` 출력본
 - Kubescape archive (`reports/dev/21/kubescape/kubescape-summary.txt`) — NSA/MITRE/CIS 결과
 - 디버깅 함정 13개 슬라이드
 - 발표 전 PAT 노출분 모두 revoke
