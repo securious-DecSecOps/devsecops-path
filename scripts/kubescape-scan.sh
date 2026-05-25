@@ -24,22 +24,65 @@ ensure_kubescape() {
   fi
 
   require_cmd curl
-  local tmp_bin="/tmp/kubescape-ubuntu-latest"
-  local url="https://github.com/kubescape/kubescape/releases/latest/download/kubescape-ubuntu-latest"
 
-  echo "kubescape command not found; installing from ${url}"
-  if ! curl -fsSL "${url}" -o "${tmp_bin}"; then
-    echo "ERROR: failed to download kubescape binary from ${url}" >&2
+  # Kubescape release asset naming: kubescape_<version>_linux_amd64.tar.gz
+  # (이전의 kubescape-ubuntu-latest 패턴은 deprecated, 404 발생)
+  # latest tag를 API로 조회 후 정확한 tar.gz URL을 구성한다. 네트워크 차단 환경 대비
+  # KUBESCAPE_VERSION env 변수로 override 가능 (예: v4.0.8).
+  local version="${KUBESCAPE_VERSION:-}"
+  if [[ -z "${version}" ]]; then
+    version="$(curl -fsSL https://api.github.com/repos/kubescape/kubescape/releases/latest \
+      | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name',''))" 2>/dev/null || true)"
+  fi
+  if [[ -z "${version}" ]]; then
+    version="v4.0.8"  # PoC 시점 검증된 버전 — API 호출 실패 시 fallback
+    echo "WARN: kubescape latest version 조회 실패, fallback ${version} 사용"
+  fi
+  local version_num="${version#v}"
+  local arch="amd64"
+  case "$(uname -m)" in
+    aarch64|arm64) arch="arm64" ;;
+  esac
+
+  local asset="kubescape_${version_num}_linux_${arch}.tar.gz"
+  local url="https://github.com/kubescape/kubescape/releases/download/${version}/${asset}"
+  local tmp_tar="/tmp/${asset}"
+  local tmp_dir="/tmp/kubescape-extract"
+
+  echo "kubescape command not found; installing ${version} (${arch}) from ${url}"
+  if ! curl -fsSL "${url}" -o "${tmp_tar}"; then
+    echo "ERROR: failed to download kubescape tarball from ${url}" >&2
     return 1
   fi
-  chmod 755 "${tmp_bin}"
+
+  rm -rf "${tmp_dir}" && mkdir -p "${tmp_dir}"
+  if ! tar -xzf "${tmp_tar}" -C "${tmp_dir}"; then
+    echo "ERROR: failed to extract ${tmp_tar}" >&2
+    rm -f "${tmp_tar}"
+    return 1
+  fi
+  rm -f "${tmp_tar}"
+
+  # tarball 안에 kubescape 바이너리가 있다. 디렉토리 구조가 버전마다 다를 수 있으니 find로 위치 확인.
+  local bin_path
+  bin_path="$(find "${tmp_dir}" -type f -name "kubescape" -perm -u+x 2>/dev/null | head -1)"
+  if [[ -z "${bin_path}" ]]; then
+    bin_path="$(find "${tmp_dir}" -type f -name "kubescape" 2>/dev/null | head -1)"
+  fi
+  if [[ -z "${bin_path}" || ! -f "${bin_path}" ]]; then
+    echo "ERROR: extracted tarball does not contain kubescape binary" >&2
+    ls -la "${tmp_dir}" >&2 || true
+    return 1
+  fi
+  chmod 755 "${bin_path}"
 
   if [[ -w /usr/local/bin ]]; then
-    mv "${tmp_bin}" /usr/local/bin/kubescape
+    mv "${bin_path}" /usr/local/bin/kubescape
   else
     mkdir -p "${HOME}/.local/bin"
-    mv "${tmp_bin}" "${HOME}/.local/bin/kubescape"
+    mv "${bin_path}" "${HOME}/.local/bin/kubescape"
   fi
+  rm -rf "${tmp_dir}"
 
   command -v kubescape >/dev/null 2>&1
 }
@@ -214,7 +257,7 @@ kubescape list frameworks > "${kubescape_dir}/frameworks.txt" 2>&1 || true
 
 nsa_framework="$(framework_name nsa nsa-cisa "${kubescape_dir}/frameworks.txt")"
 mitre_framework="$(framework_name mitre mitre-attack "${kubescape_dir}/frameworks.txt")"
-cis_framework="$(framework_name cis-v1.23-t1.0.1 cis "${kubescape_dir}/frameworks.txt")"
+cis_framework="$(framework_name cis-v1.12.0 cis-v1.10.0 "${kubescape_dir}/frameworks.txt")"
 
 run_framework_scan "NSA" "${nsa_framework}" "${kubescape_dir}/nsa.json" "${kubescape_dir}/nsa.err" "${kubescape_dir}/nsa.meta"
 run_framework_scan "MITRE" "${mitre_framework}" "${kubescape_dir}/mitre.json" "${kubescape_dir}/mitre.err" "${kubescape_dir}/mitre.meta"
