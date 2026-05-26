@@ -50,3 +50,24 @@ Phase 4의 미완성 부분은 백엔드만 token 인증으로 전환되고, 브
 이번 패치로 `vulnbank.js`가 로그인 응답의 token을 `localStorage`에 저장하고, 모든 Ajax 호출에 Bearer token을 자동 첨부한다. 로그아웃 시에는 `logout.php`가 `localStorage`의 `vb_token`을 제거한 뒤 `login.php`로 이동한다.
 
 결과적으로 브라우저 UI에서 `login.php` 로그인 이후 `portal.php`, `transactions.php`, `settings.php` 흐름이 다시 동작한다. 기존 `verify.sh`는 `/api/v1/*` 경로를 직접 호출하고 Bearer 헤더를 직접 첨부하므로 이번 UI 패치의 영향을 받지 않아야 한다.
+
+## 6. GitOps Push 동시성 한계
+
+Jenkins 파이프라인은 이미지 빌드와 Harbor push 이후 `gitops-manifest-repo`의 `apps/vulnbank-msa/dev/values.yaml`에 새 이미지 태그를 기록하고 commit/push한다. ArgoCD는 이 Git 변경을 감지해 배포를 진행한다. 따라서 GitOps push 실패는 단순 경고가 아니라 실제 배포 실패다.
+
+이번 보완으로 막은 것은 다음과 같다.
+
+- `disableConcurrentBuilds()`로 같은 Jenkins job 내부의 동시 실행을 줄인다.
+- `git push` 실패 시 `ENFORCE_GATE` 값과 무관하게 hard-fail한다. `ENFORCE_GATE`는 취약점 발견 시 차단 여부를 정하는 보안 정책이며, GitOps push 실패 같은 인프라 장애를 성공으로 바꾸면 안 된다.
+- GitHub PAT를 `https://user:token@...` URL에 넣지 않고 `GIT_ASKPASS`로 주입한다. 이렇게 해야 `ps`나 `/proc/<pid>/cmdline`에 토큰이 노출되지 않는다.
+- non-fast-forward 상황에 대비해 rebase 후 push를 여러 번 재시도하고, 각 재시도 사이에 backoff를 둔다.
+
+아직 완전히 막지 못한 것은 job 간 또는 여러 워크로드 간의 동시 GitOps push 경쟁이다. `disableConcurrentBuilds()`는 같은 job만 직렬화할 뿐, 다른 Jenkins job이나 다른 자동화 주체가 같은 GitOps repo를 동시에 수정하는 상황까지 결정적으로 막지는 못한다.
+
+스케일아웃 단계에서는 다음 중 하나를 도입해야 한다.
+
+- Jenkins Lockable Resources 플러그인으로 `lock('gitops-manifest-repo')` 같은 전역 GitOps write lock을 둔다.
+- ArgoCD Image Updater처럼 단일 writer가 image tag bump를 담당하게 한다.
+- 워크로드별 `apps/<workload>/<env>/values.yaml` 분리를 유지해 충돌 범위를 줄이고, 공용 파일 수정을 최소화한다.
+
+현재 PoC는 단일 `vulnbank-msa-dev` job의 GitOps push 신뢰성을 높인 단계이며, 멀티워크로드 운영용 GitOps write coordination은 다음 단계의 과제다.

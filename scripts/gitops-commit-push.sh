@@ -11,10 +11,13 @@ require_env() {
 
 sanitize_git_output() {
   local input_file="$1"
-  python3 - "${input_file}" "${GITHUB_USER:-}" "${GITHUB_PAT:-}" <<'PY'
+  python3 - "${input_file}" <<'PY'
+import os
 import sys
 
-path, user, token = sys.argv[1], sys.argv[2], sys.argv[3]
+path = sys.argv[1]
+user = os.environ.get("GITHUB_USER", "")
+token = os.environ.get("GITHUB_PAT", "")
 with open(path, "r", encoding="utf-8", errors="replace") as fh:
     text = fh.read()
 
@@ -31,13 +34,65 @@ PY
 
 handle_push_failure() {
   local output_file="$1"
-  echo "ERROR: gitops-manifest-repo push failed after retry." >&2
+  # GitOps push failure is an infrastructure/deployment failure, not a
+  # vulnerability policy decision. ENFORCE_GATE only controls whether security
+  # findings block the build; it must never turn a failed GitOps push into a
+  # successful Jenkins build because ArgoCD would keep running the old image.
+  echo "ERROR: gitops-manifest-repo push failed after all retries." >&2
   sanitize_git_output "${output_file}" >&2 || true
-  if [[ "${ENFORCE_GATE:-false}" == "true" ]]; then
-    exit 1
+  exit 1
+}
+
+setup_git_askpass() {
+  # Do not put the GitHub PAT in the remote URL. A URL such as
+  # https://user:token@github.com/... leaks through process argv and /proc.
+  # GIT_ASKPASS lets Git obtain credentials from environment variables without
+  # exposing the token in the git push command line.
+  askpass_file="$(mktemp)"
+  chmod 700 "${askpass_file}"
+  cat > "${askpass_file}" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  *Username*|*username*)
+    printf '%s\n' "${GIT_USER:-}"
+    ;;
+  *Password*|*password*)
+    printf '%s\n' "${GIT_PAT:-}"
+    ;;
+  *)
+    printf '\n'
+    ;;
+esac
+EOF
+  export GIT_ASKPASS="${askpass_file}"
+  export GIT_TERMINAL_PROMPT=0
+  export GIT_USER="${GITHUB_USER}"
+  export GIT_PAT="${GITHUB_PAT}"
+}
+
+cleanup() {
+  if [[ -n "${askpass_file:-}" ]]; then
+    rm -f "${askpass_file}"
   fi
-  echo "WARN: ENFORCE_GATE=${ENFORCE_GATE:-false}; continuing after GitOps push failure." >&2
-  exit 0
+  if [[ -n "${commit_message_file:-}" ]]; then
+    rm -f "${commit_message_file}"
+  fi
+  if [[ -n "${push_output:-}" ]]; then
+    rm -f "${push_output}"
+  fi
+}
+
+push_once() {
+  local output_file="$1"
+  git push "${GITOPS_PUSH_REPO_URL}" "HEAD:${GITOPS_BRANCH}" > "${output_file}" 2>&1
+}
+
+rebase_from_remote() {
+  local output_file="$1"
+  if ! git fetch "${GITOPS_PUSH_REPO_URL}" "${GITOPS_BRANCH}" >> "${output_file}" 2>&1; then
+    return 1
+  fi
+  git rebase FETCH_HEAD >> "${output_file}" 2>&1
 }
 
 require_env IMAGE_TAG
@@ -48,8 +103,15 @@ GITOPS_REPO_DIR="${GITOPS_REPO_DIR:-gitops-manifest-repo}"
 GITOPS_BRANCH="${GITOPS_BRANCH:-main}"
 GITOPS_COMMIT_EMAIL="${GITOPS_COMMIT_EMAIL:-jenkins@secubank.local}"
 GITOPS_COMMIT_NAME="${GITOPS_COMMIT_NAME:-Jenkins CI (vulnbank-msa)}"
+GITOPS_PUSH_REPO_URL="${GITOPS_PUSH_REPO_URL:-https://github.com/securious-DecSecOps/gitops-manifest-repo.git}"
+GITOPS_PUSH_MAX_ATTEMPTS="${GITOPS_PUSH_MAX_ATTEMPTS:-5}"
 BUILD_NUMBER="${BUILD_NUMBER:-unknown}"
 JOB_NAME="${JOB_NAME:-unknown-job}"
+askpass_file=""
+commit_message_file=""
+push_output=""
+
+trap cleanup EXIT
 
 if [[ -n "${GITOPS_VALUES_FILE:-}" ]]; then
   values_file="${GITOPS_VALUES_FILE}"
@@ -61,6 +123,11 @@ fi
 
 if [[ ! -d "${GITOPS_REPO_DIR}/.git" ]]; then
   echo "ERROR: GitOps repo checkout not found: ${GITOPS_REPO_DIR}" >&2
+  exit 1
+fi
+
+if ! [[ "${GITOPS_PUSH_MAX_ATTEMPTS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: GITOPS_PUSH_MAX_ATTEMPTS must be a positive integer: ${GITOPS_PUSH_MAX_ATTEMPTS}" >&2
   exit 1
 fi
 
@@ -97,29 +164,38 @@ if git diff --cached --quiet -- "${values_file}"; then
 fi
 
 git commit -F "${commit_message_file}"
-rm -f "${commit_message_file}"
-
-remote_url="https://${GITHUB_USER}:${GITHUB_PAT}@github.com/securious-DecSecOps/gitops-manifest-repo.git"
 push_output="$(mktemp)"
+setup_git_askpass
 
 echo "Pushing GitOps values update to gitops-manifest-repo branch ${GITOPS_BRANCH}"
-if git push "${remote_url}" "HEAD:${GITOPS_BRANCH}" > "${push_output}" 2>&1; then
-  echo "GitOps push completed."
-  rm -f "${push_output}"
-  exit 0
-fi
+for attempt in $(seq 1 "${GITOPS_PUSH_MAX_ATTEMPTS}"); do
+  : > "${push_output}"
+  if push_once "${push_output}"; then
+    if [[ "${attempt}" -eq 1 ]]; then
+      echo "GitOps push completed."
+    else
+      echo "GitOps push completed after rebase attempt ${attempt}."
+    fi
+    exit 0
+  fi
 
-echo "WARN: initial GitOps push failed; attempting git pull --rebase and one retry." >&2
-sanitize_git_output "${push_output}" >&2 || true
+  echo "WARN: GitOps push attempt ${attempt}/${GITOPS_PUSH_MAX_ATTEMPTS} failed." >&2
+  sanitize_git_output "${push_output}" >&2 || true
 
-if ! git pull --rebase origin "${GITOPS_BRANCH}" >> "${push_output}" 2>&1; then
-  handle_push_failure "${push_output}"
-fi
+  if [[ "${attempt}" -ge "${GITOPS_PUSH_MAX_ATTEMPTS}" ]]; then
+    break
+  fi
 
-if git push "${remote_url}" "HEAD:${GITOPS_BRANCH}" > "${push_output}" 2>&1; then
-  echo "GitOps push completed after rebase."
-  rm -f "${push_output}"
-  exit 0
-fi
+  echo "WARN: rebasing on ${GITOPS_BRANCH} before retry $((attempt + 1))." >&2
+  if ! rebase_from_remote "${push_output}"; then
+    echo "WARN: rebase attempt ${attempt} failed; aborting any in-progress rebase." >&2
+    git rebase --abort >> "${push_output}" 2>&1 || true
+    sanitize_git_output "${push_output}" >&2 || true
+  fi
+
+  backoff=$((2 ** attempt))
+  echo "WARN: waiting ${backoff}s before GitOps push retry $((attempt + 1))." >&2
+  sleep "${backoff}"
+done
 
 handle_push_failure "${push_output}"
