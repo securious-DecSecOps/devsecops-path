@@ -1,0 +1,173 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  parameters {
+    string(name: 'KUBECONFIG', defaultValue: '/var/lib/jenkins/kubeconfig', description: 'Kubeconfig path on the Jenkins controller.')
+    string(name: 'REPORT_DIR', defaultValue: 'reports/runtime-security', description: 'Base directory for runtime security evidence.')
+    string(name: 'KUBE_BENCH_JOB', defaultValue: 'kube-bench-manual', description: 'Temporary kube-bench job name.')
+    string(name: 'KUBE_BENCH_CRONJOB', defaultValue: 'kube-bench', description: 'kube-bench CronJob name.')
+    string(name: 'OWASP_ZAP_JOB', defaultValue: 'owasp-zap-manual', description: 'Temporary OWASP ZAP job name.')
+    string(name: 'OWASP_ZAP_CRONJOB', defaultValue: 'owasp-zap', description: 'OWASP ZAP CronJob name.')
+    string(name: 'OWASP_ZAP_TARGET_URL', defaultValue: '', description: 'Optional ZAP target URL. Leave blank to use the CronJob default target.')
+  }
+
+  environment {
+    KUBECONFIG = "${params.KUBECONFIG}"
+    REPORT_DIR = "${params.REPORT_DIR}"
+    KUBE_BENCH_JOB = "${params.KUBE_BENCH_JOB}"
+    KUBE_BENCH_CRONJOB = "${params.KUBE_BENCH_CRONJOB}"
+    OWASP_ZAP_JOB = "${params.OWASP_ZAP_JOB}"
+    OWASP_ZAP_CRONJOB = "${params.OWASP_ZAP_CRONJOB}"
+    OWASP_ZAP_TARGET_URL = "${params.OWASP_ZAP_TARGET_URL}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Preflight') {
+      steps {
+        sh '''
+          set -euo pipefail
+
+          require_cmd() {
+            if ! command -v "$1" >/dev/null 2>&1; then
+              echo "ERROR: required command not found: $1" >&2
+              exit 1
+            fi
+          }
+
+          for cmd in kubectl git; do
+            require_cmd "$cmd"
+          done
+
+          if [[ ! -f "${KUBECONFIG}" ]]; then
+            echo "ERROR: KUBECONFIG does not exist: ${KUBECONFIG}" >&2
+            exit 1
+          fi
+
+          kubectl version --client=true
+          kubectl get nodes
+        '''
+      }
+    }
+
+    stage('Prepare Evidence') {
+      steps {
+        sh '''
+          set -euo pipefail
+          mkdir -p \
+            "${REPORT_DIR}" \
+            "${REPORT_DIR}/cilium-hubble" \
+            "${REPORT_DIR}/falco" \
+            "${REPORT_DIR}/kube-bench" \
+            "${REPORT_DIR}/owasp-zap"
+
+          GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
+          {
+            echo "BUILD_NUMBER=${BUILD_NUMBER}"
+            echo "GIT_SHA=${GIT_SHA:-unknown}"
+            echo "KUBECONFIG=${KUBECONFIG}"
+            echo "REPORT_DIR=${REPORT_DIR}"
+            echo "KUBE_BENCH_JOB=${KUBE_BENCH_JOB}"
+            echo "KUBE_BENCH_CRONJOB=${KUBE_BENCH_CRONJOB}"
+            echo "OWASP_ZAP_JOB=${OWASP_ZAP_JOB}"
+            echo "OWASP_ZAP_CRONJOB=${OWASP_ZAP_CRONJOB}"
+            echo "OWASP_ZAP_TARGET_URL=${OWASP_ZAP_TARGET_URL}"
+          } | tee "${REPORT_DIR}/metadata.txt"
+        '''
+      }
+    }
+
+    stage('Cilium And Hubble') {
+      steps {
+        sh '''
+          set -euo pipefail
+          {
+            echo "[Pods]"
+            kubectl -n kube-system get pods -o wide | grep -E 'cilium|hubble' || true
+            echo
+            echo "[Services]"
+            kubectl -n kube-system get svc hubble-ui hubble-ui-nodeport 2>/dev/null || true
+            echo
+            echo "[Status]"
+            kubectl -n kube-system get ds cilium 2>/dev/null || true
+            kubectl -n kube-system get deploy hubble-relay hubble-ui 2>/dev/null || true
+          } | tee "${REPORT_DIR}/cilium-hubble/status.txt"
+        '''
+      }
+    }
+
+    stage('Falco Evidence') {
+      steps {
+        sh '''
+          set -euo pipefail
+          {
+            kubectl -n falco get pods -o wide
+            echo
+            kubectl -n falco logs -l app.kubernetes.io/name=falco -c falco --tail=300
+          } | tee "${REPORT_DIR}/falco/falco.log"
+        '''
+      }
+    }
+
+    stage('kube-bench Evidence') {
+      steps {
+        sh '''
+          set -euo pipefail
+          kubectl -n kube-bench delete job "${KUBE_BENCH_JOB}" --ignore-not-found
+          kubectl -n kube-bench create job "${KUBE_BENCH_JOB}" --from=cronjob/"${KUBE_BENCH_CRONJOB}"
+
+          if ! kubectl -n kube-bench wait --for=condition=complete "job/${KUBE_BENCH_JOB}" --timeout=600s; then
+            kubectl -n kube-bench get pods -o wide | tee "${REPORT_DIR}/kube-bench/pods.txt" || true
+            kubectl -n kube-bench describe job "${KUBE_BENCH_JOB}" > "${REPORT_DIR}/kube-bench/job-describe.txt" || true
+            kubectl -n kube-bench logs "job/${KUBE_BENCH_JOB}" > "${REPORT_DIR}/kube-bench/kube-bench.log" || true
+            exit 1
+          fi
+
+          kubectl -n kube-bench logs "job/${KUBE_BENCH_JOB}" | tee "${REPORT_DIR}/kube-bench/kube-bench.log"
+        '''
+      }
+    }
+
+    stage('OWASP ZAP Evidence') {
+      steps {
+        catchError(buildResult: 'UNSTABLE', stageResult: 'FAILURE') {
+          sh '''
+            set -euo pipefail
+
+            kubectl -n owasp-zap delete job "${OWASP_ZAP_JOB}" --ignore-not-found
+            kubectl -n owasp-zap create job "${OWASP_ZAP_JOB}" --from=cronjob/"${OWASP_ZAP_CRONJOB}"
+
+            if [[ -n "${OWASP_ZAP_TARGET_URL}" ]]; then
+              kubectl -n owasp-zap annotate job "${OWASP_ZAP_JOB}" "runtime-security/target-url=${OWASP_ZAP_TARGET_URL}" --overwrite
+            fi
+
+            if ! kubectl -n owasp-zap wait --for=condition=complete "job/${OWASP_ZAP_JOB}" --timeout=900s; then
+              kubectl -n owasp-zap get pods -o wide | tee "${REPORT_DIR}/owasp-zap/pods.txt" || true
+              kubectl -n owasp-zap describe job "${OWASP_ZAP_JOB}" > "${REPORT_DIR}/owasp-zap/job-describe.txt" || true
+              kubectl -n owasp-zap logs "job/${OWASP_ZAP_JOB}" > "${REPORT_DIR}/owasp-zap/owasp-zap.log" || true
+              exit 1
+            fi
+
+            kubectl -n owasp-zap logs "job/${OWASP_ZAP_JOB}" | tee "${REPORT_DIR}/owasp-zap/owasp-zap.log"
+          '''
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: "${REPORT_DIR}/**", allowEmptyArchive: true, fingerprint: true
+    }
+  }
+}
