@@ -5,6 +5,10 @@ pipeline {
     disableConcurrentBuilds()
   }
 
+  triggers {
+    pollSCM('H/5 * * * *')
+  }
+
   parameters {
     string(name: 'WORKLOAD_NAME', defaultValue: 'vulnbank-msa', description: 'CI-only workload profile name.')
     string(name: 'APP_NAME', defaultValue: 'vulnbank-msa', description: 'Application image prefix.')
