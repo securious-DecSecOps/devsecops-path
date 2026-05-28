@@ -1,0 +1,247 @@
+pipeline {
+  agent any
+
+  options {
+    timestamps()
+    disableConcurrentBuilds()
+  }
+
+  parameters {
+    string(name: 'WORKLOAD_NAME', defaultValue: 'vulnbank-msa', description: 'CI-only workload profile name.')
+    string(name: 'APP_NAME', defaultValue: 'vulnbank-msa', description: 'Application image prefix.')
+    string(name: 'APP_SOURCE_REPO_URL', defaultValue: 'https://github.com/securious-DecSecOps/app-source-repo.git', description: 'GitHub URL of app-source-repo.')
+    string(name: 'APP_SOURCE_BRANCH', defaultValue: 'main', description: 'Branch to check out from app-source-repo.')
+    string(name: 'GITOPS_REPO_URL', defaultValue: 'https://github.com/securious-DecSecOps/gitops-manifest-repo.git', description: 'GitHub URL of gitops-manifest-repo for Helm/K8s scan inputs.')
+    string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'Branch to check out from gitops-manifest-repo.')
+    string(name: 'MSA_WORKLOAD_DIR', defaultValue: 'app-source-repo/examples/vulnbank-msa', description: 'MSA workload source root after checkout.')
+    string(name: 'SERVICES', defaultValue: 'user-service,transaction-service,status-service,file-service,settings-service,frontend', description: 'Comma-separated service list.')
+    string(name: 'REGISTRY_URL', defaultValue: '10.0.1.169:8082', description: 'AWS Harbor registry endpoint as seen from Jenkins.')
+    string(name: 'REGISTRY_PROJECT', defaultValue: 'secubank', description: 'Harbor project/repository namespace.')
+    string(name: 'REGISTRY_USERNAME', defaultValue: 'admin', description: 'Harbor username. Prefer Jenkins credentials for shared environments.')
+    password(name: 'REGISTRY_PASSWORD', defaultValue: '', description: 'Harbor password or robot token.')
+    string(name: 'IMAGE_TAG', defaultValue: '', description: 'Image tag. Defaults to BUILD_NUMBER when blank.')
+    booleanParam(name: 'ENFORCE_GATE', defaultValue: false, description: 'Fail the pipeline when the security gate blocks.')
+    string(name: 'HELM_CHART_DIR', defaultValue: 'gitops-manifest-repo/helm/vulnbank-msa', description: 'Helm chart directory used by Checkov/Kubescape.')
+    string(name: 'SONAR_HOST_URL', defaultValue: 'http://localhost:9000', description: 'SonarQube URL as seen from AWS Jenkins.')
+    password(name: 'SONAR_TOKEN', defaultValue: '', description: 'SonarQube token. Empty value skips SonarQube scan.')
+  }
+
+  environment {
+    WORKLOAD_NAME = "${params.WORKLOAD_NAME}"
+    APP_NAME = "${params.APP_NAME}"
+    APP_SOURCE_REPO_URL = "${params.APP_SOURCE_REPO_URL}"
+    APP_SOURCE_BRANCH = "${params.APP_SOURCE_BRANCH}"
+    GITOPS_REPO_URL = "${params.GITOPS_REPO_URL}"
+    GITOPS_BRANCH = "${params.GITOPS_BRANCH}"
+    MSA_WORKLOAD_DIR = "${params.MSA_WORKLOAD_DIR}"
+    SERVICES = "${params.SERVICES}"
+    REGISTRY_URL = "${params.REGISTRY_URL}"
+    REGISTRY_PROJECT = "${params.REGISTRY_PROJECT}"
+    REGISTRY_USERNAME = "${params.REGISTRY_USERNAME}"
+    REGISTRY_PASSWORD = "${params.REGISTRY_PASSWORD}"
+    ENFORCE_GATE = "${params.ENFORCE_GATE}"
+    HELM_CHART_DIR = "${params.HELM_CHART_DIR}"
+    SONAR_HOST_URL = "${params.SONAR_HOST_URL}"
+    SONAR_TOKEN = "${params.SONAR_TOKEN}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Preflight Tools') {
+      steps {
+        sh '''
+          set -euo pipefail
+
+          require_cmd() {
+            if ! command -v "$1" >/dev/null 2>&1; then
+              echo "ERROR: required command not found: $1" >&2
+              exit 1
+            fi
+          }
+
+          for cmd in docker git trivy python3 gitleaks checkov kubescape; do
+            require_cmd "$cmd"
+          done
+
+          docker --version
+          git --version
+          trivy --version
+          python3 --version
+          if command -v syft >/dev/null 2>&1; then
+            syft version || true
+          else
+            echo "WARN: syft not found. Current SBOM script uses Trivy SPDX/CycloneDX, so this is non-blocking."
+          fi
+          gitleaks version
+          checkov --version
+          kubescape version || true
+          if command -v sonar-scanner >/dev/null 2>&1; then
+            sonar-scanner --version || true
+          else
+            echo "WARN: sonar-scanner not found. scripts/sonarqube-scan-services.sh can install it if SONAR_TOKEN is provided."
+          fi
+        '''
+      }
+    }
+
+    stage('Checkout App Source') {
+      steps {
+        dir('app-source-repo') {
+          checkout([
+            $class: 'GitSCM',
+            userRemoteConfigs: [[url: "${APP_SOURCE_REPO_URL}"]],
+            branches: [[name: "*/${APP_SOURCE_BRANCH}"]],
+          ])
+        }
+        sh 'test -d app-source-repo/examples/vulnbank-msa/services && ls -la app-source-repo/examples/vulnbank-msa/services | head'
+      }
+    }
+
+    stage('Checkout GitOps Repo') {
+      steps {
+        dir('gitops-manifest-repo') {
+          checkout([
+            $class: 'GitSCM',
+            userRemoteConfigs: [[url: "${GITOPS_REPO_URL}"]],
+            branches: [[name: "*/${GITOPS_BRANCH}"]],
+          ])
+        }
+        sh 'test -d gitops-manifest-repo/helm/vulnbank-msa && ls -la gitops-manifest-repo/helm/vulnbank-msa/templates | head'
+      }
+    }
+
+    stage('Prepare Metadata') {
+      steps {
+        script {
+          env.IMAGE_TAG = params.IMAGE_TAG?.trim() ? params.IMAGE_TAG.trim() : env.BUILD_NUMBER
+          env.REPORT_DIR = "reports/dev/${env.BUILD_NUMBER}"
+        }
+        sh '''
+          set -euo pipefail
+          mkdir -p \
+            "${REPORT_DIR}/gate" \
+            "${REPORT_DIR}/registry" \
+            "${REPORT_DIR}/checkov" \
+            "${REPORT_DIR}/gitleaks" \
+            "${REPORT_DIR}/sonarqube" \
+            "${REPORT_DIR}/kubescape" \
+            "${REPORT_DIR}/sbom" \
+            "${REPORT_DIR}/trivy"
+
+          GIT_SHA="$(git rev-parse --short HEAD 2>/dev/null || true)"
+          APP_SHA="$(git -C app-source-repo rev-parse --short HEAD 2>/dev/null || true)"
+          GITOPS_SHA="$(git -C gitops-manifest-repo rev-parse --short HEAD 2>/dev/null || true)"
+          {
+            echo "BUILD_NUMBER=${BUILD_NUMBER}"
+            echo "CI_REPO_SHA=${GIT_SHA:-unknown}"
+            echo "APP_SOURCE_SHA=${APP_SHA:-unknown}"
+            echo "GITOPS_SHA=${GITOPS_SHA:-unknown}"
+            echo "WORKLOAD_NAME=${WORKLOAD_NAME}"
+            echo "APP_NAME=${APP_NAME}"
+            echo "MSA_WORKLOAD_DIR=${MSA_WORKLOAD_DIR}"
+            echo "SERVICES=${SERVICES}"
+            echo "IMAGE_TAG=${IMAGE_TAG}"
+            echo "REGISTRY_URL=${REGISTRY_URL}"
+            echo "REGISTRY_PROJECT=${REGISTRY_PROJECT}"
+            echo "ENFORCE_GATE=${ENFORCE_GATE}"
+            echo "REPORT_DIR=${REPORT_DIR}"
+            echo "MODE=CI_ONLY_BUILD_SCAN_PUSH"
+          } | tee "${REPORT_DIR}/metadata.txt"
+        '''
+      }
+    }
+
+    stage('Gitleaks Secret Scan') {
+      steps {
+        sh 'bash scripts/gitleaks-scan-repos.sh'
+      }
+    }
+
+    stage('SonarQube SAST') {
+      steps {
+        sh 'bash scripts/sonarqube-scan-services.sh'
+      }
+    }
+
+    stage('Checkov IaC Scan') {
+      steps {
+        sh 'bash scripts/checkov-scan-services.sh'
+      }
+    }
+
+    stage('Kubescape K8s Manifest Scan') {
+      steps {
+        sh 'bash scripts/kubescape-scan.sh'
+      }
+    }
+
+    stage('Docker Build Services') {
+      steps {
+        sh 'bash scripts/build-services.sh'
+      }
+    }
+
+    stage('Generate SBOM') {
+      steps {
+        sh 'bash scripts/generate-sbom.sh'
+      }
+    }
+
+    stage('Trivy Scan Services') {
+      steps {
+        sh 'bash scripts/trivy-scan-services.sh'
+      }
+    }
+
+    stage('Security Gate') {
+      steps {
+        sh 'bash scripts/security-gate-services.sh'
+      }
+    }
+
+    stage('Registry Login') {
+      steps {
+        sh 'bash scripts/registry-login.sh'
+      }
+    }
+
+    stage('Registry Push Services') {
+      steps {
+        sh 'bash scripts/push-services.sh'
+      }
+    }
+
+    stage('Collect CI Evidence') {
+      steps {
+        sh '''
+          set -euo pipefail
+          evidence="${REPORT_DIR}/ci-evidence-summary.txt"
+          {
+            echo "CI-only evidence summary"
+            echo "metadata=${REPORT_DIR}/metadata.txt"
+            echo "gitleaks=${REPORT_DIR}/gitleaks"
+            echo "sonarqube=${REPORT_DIR}/sonarqube"
+            echo "checkov=${REPORT_DIR}/checkov"
+            echo "kubescape=${REPORT_DIR}/kubescape"
+            echo "sbom=${REPORT_DIR}/sbom"
+            echo "trivy=${REPORT_DIR}/trivy"
+            echo "gate=${REPORT_DIR}/gate"
+            echo "registry=${REPORT_DIR}/registry"
+          } | tee "${evidence}"
+          find "${REPORT_DIR}" -maxdepth 3 -type f | sort > "${REPORT_DIR}/evidence-files.txt"
+        '''
+      }
+    }
+
+    stage('Archive Evidence') {
+      steps {
+        archiveArtifacts artifacts: "${env.REPORT_DIR}/**", allowEmptyArchive: true, fingerprint: true
+      }
+    }
+  }
+}
