@@ -241,6 +241,12 @@ pipeline {
       }
     }
 
+    stage('Notify (SNS)') {
+      steps {
+        sh 'bash scripts/notify-sns.sh || true'
+      }
+    }
+
     stage('Archive Evidence') {
       steps {
         archiveArtifacts artifacts: "${env.REPORT_DIR}/**", allowEmptyArchive: true, fingerprint: true
